@@ -72,9 +72,32 @@ impl UserConfig {
 
     // TODO: Improve error formatting of serde_yaml errors. Something
     // similar to https://github.com/AlexanderThaller/format_serde_error
-    let config_value = serde_yaml::from_str(&config_str)?;
+    let config_value: ParsedConfig = serde_yaml::from_str(&config_str)?;
+
+    Self::validate_workspace_configs(&config_value);
 
     Ok((config_value, config_str))
+  }
+
+  /// Emits non-fatal warnings for problematic workspace configs.
+  fn validate_workspace_configs(config_value: &ParsedConfig) {
+    for workspace_config in &config_value.workspaces {
+      if workspace_config.monitors.is_some() {
+        if workspace_config.bind_to_monitor.is_some() {
+          tracing::warn!(
+            "Workspace '{}' sets both `monitors` and `bind_to_monitor`; `monitors` takes precedence.",
+            workspace_config.name
+          );
+        }
+
+        if workspace_config.name.contains('#') {
+          tracing::warn!(
+            "Workspace '{}' contains '#', which is reserved for synthesized instances of spanning workspaces.",
+            workspace_config.name
+          );
+        }
+      }
+    }
   }
 
   /// Initializes a new config file from the sample config resource.
@@ -334,6 +357,16 @@ impl UserConfig {
       .copied()
   }
 
+  /// Config for a spanning workspace group with the given name, if any.
+  pub fn spanning_workspace_config(
+    &self,
+    workspace_name: &str,
+  ) -> Option<&WorkspaceConfig> {
+    self.value.workspaces.iter().find(|config| {
+      config.name == workspace_name && config.monitors.is_some()
+    })
+  }
+
   pub fn workspace_config_index(
     &self,
     workspace_name: &str,
@@ -347,7 +380,16 @@ impl UserConfig {
 
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
     workspaces.sort_by_key(|workspace| {
-      self.workspace_config_index(&workspace.config().name)
+      let config = workspace.config();
+
+      // Synthesized instances of spanning workspaces aren't present in
+      // the user's config; sort them by their group's config position.
+      self.workspace_config_index(&config.name).or_else(|| {
+        config
+          .spanning_group
+          .as_deref()
+          .and_then(|group| self.workspace_config_index(group))
+      })
     });
   }
 
@@ -376,5 +418,84 @@ impl UserConfig {
         true
       }
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{collections::HashMap, path::PathBuf};
+
+  use wm_common::{MonitorSelector, ParsedConfig, WorkspaceConfig};
+
+  use super::UserConfig;
+  use crate::models::Workspace;
+
+  fn mock_user_config(
+    workspace_configs: Vec<WorkspaceConfig>,
+  ) -> UserConfig {
+    UserConfig {
+      path: PathBuf::new(),
+      value: ParsedConfig {
+        workspaces: workspace_configs,
+        ..ParsedConfig::default()
+      },
+      value_str: String::new(),
+      window_rules_by_event: HashMap::new(),
+    }
+  }
+
+  fn mock_workspace_config(
+    name: &str,
+    monitors: Option<MonitorSelector>,
+  ) -> WorkspaceConfig {
+    WorkspaceConfig {
+      name: name.to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      monitors,
+      spanning_group: None,
+    }
+  }
+
+  #[test]
+  fn finds_spanning_workspace_config() {
+    let config = mock_user_config(vec![
+      mock_workspace_config("1", None),
+      mock_workspace_config("2", Some(MonitorSelector::All)),
+    ]);
+
+    assert!(config.spanning_workspace_config("2").is_some());
+    assert!(config.spanning_workspace_config("1").is_none());
+    assert!(config.spanning_workspace_config("9").is_none());
+  }
+
+  #[test]
+  fn sorts_synthesized_instances_by_group_position() {
+    let config = mock_user_config(vec![
+      mock_workspace_config("1", None),
+      mock_workspace_config("2", Some(MonitorSelector::All)),
+      mock_workspace_config("3", None),
+    ]);
+
+    let instance = Workspace::mock().name("2#abc123".to_string()).call();
+    let mut instance_config = instance.config();
+    instance_config.spanning_group = Some("2".to_string());
+    instance.set_config(instance_config);
+
+    let mut workspaces = vec![
+      Workspace::mock().name("3".to_string()).call(),
+      instance,
+      Workspace::mock().name("1".to_string()).call(),
+    ];
+
+    config.sort_workspaces(&mut workspaces);
+
+    let names = workspaces
+      .iter()
+      .map(|workspace| workspace.config().name)
+      .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["1", "2#abc123", "3"]);
   }
 }

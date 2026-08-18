@@ -372,6 +372,16 @@ pub enum WindowRuleEvent {
   TitleChange,
 }
 
+/// Which monitors a workspace should span.
+///
+/// Currently only `all` is supported (one workspace instance per
+/// monitor). Kept as an enum to allow selecting monitor subsets later.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorSelector {
+  All,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct WorkspaceConfig {
@@ -385,6 +395,21 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+
+  /// Optional monitor selector; `monitors: 'all'` makes this a spanning
+  /// ("virtual desktop") workspace with one instance per monitor.
+  ///
+  /// Takes precedence over `bind_to_monitor` when set.
+  #[serde(default)]
+  pub monitors: Option<MonitorSelector>,
+
+  /// Group name of the spanning config this runtime workspace instance
+  /// belongs to.
+  ///
+  /// Internal field: never read from the user's config file and never
+  /// emitted over IPC.
+  #[serde(skip)]
+  pub spanning_group: Option<String>,
 }
 
 /// Helper function for setting a default value for a boolean field.
@@ -470,5 +495,43 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{MonitorSelector, WorkspaceConfig};
+
+  #[test]
+  fn deserializes_monitors_field() {
+    let config: WorkspaceConfig =
+      serde_yaml::from_str("name: '1'\nmonitors: 'all'")
+        .expect("Config should deserialize.");
+
+    assert_eq!(config.monitors, Some(MonitorSelector::All));
+    assert_eq!(config.spanning_group, None);
+  }
+
+  #[test]
+  fn monitors_field_defaults_to_none() {
+    let config: WorkspaceConfig = serde_yaml::from_str("name: '1'")
+      .expect("Config should deserialize.");
+
+    assert_eq!(config.monitors, None);
+    assert_eq!(config.spanning_group, None);
+  }
+
+  #[test]
+  fn serializes_monitors_field() {
+    let config: WorkspaceConfig =
+      serde_yaml::from_str("name: '1'\nmonitors: 'all'")
+        .expect("Config should deserialize.");
+
+    let serialized =
+      serde_yaml::to_string(&config).expect("Config should serialize.");
+
+    assert!(serialized.contains("monitors: all"));
+    assert!(!serialized.contains("spanning_group"));
+    assert!(!serialized.contains("spanningGroup"));
   }
 }

@@ -6,7 +6,9 @@ use wm_platform::Display;
 use crate::{
   commands::{
     container::{attach_container, move_container_within_tree},
-    workspace::{activate_workspace, sort_workspaces},
+    workspace::{
+      activate_spanning_instance, activate_workspace, sort_workspaces,
+    },
   },
   models::{Monitor, NativeMonitorProperties, Workspace},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -49,9 +51,11 @@ pub fn move_bounded_workspaces_to_new_monitor(
     .workspaces
     .iter()
     .filter(|config| {
-      config.bind_to_monitor.is_some_and(|monitor_index| {
-        monitor.index() == monitor_index as usize
-      })
+      // Spanning workspaces ignore `bind_to_monitor`.
+      config.monitors.is_none()
+        && config.bind_to_monitor.is_some_and(|monitor_index| {
+          monitor.index() == monitor_index as usize
+        })
     })
     .collect::<Vec<_>>();
 
@@ -78,11 +82,29 @@ pub fn move_bounded_workspaces_to_new_monitor(
     }
   }
 
-  // Make sure the monitor has at least one workspace. This will
-  // automatically prioritize bound workspace configs and fall back to the
-  // first available one if needed.
+  // Make sure the monitor has at least one workspace. If the focused
+  // monitor is displaying a spanning workspace, have this monitor join
+  // it; otherwise, prioritize bound workspace configs and fall back to
+  // the first available one if needed.
   if monitor.child_count() == 0 {
-    activate_workspace(None, Some(monitor.clone()), state, config)?;
+    let focused_group = state
+      .focused_container()
+      .and_then(|focused| focused.monitor())
+      .and_then(|monitor| monitor.displayed_workspace())
+      .and_then(|workspace| workspace.config().spanning_group);
+
+    match focused_group
+      .filter(|group| config.spanning_workspace_config(group).is_some())
+    {
+      Some(group) => {
+        // The instance is the monitor's only workspace, so it's
+        // automatically displayed.
+        activate_spanning_instance(&group, monitor, state, config)?;
+      }
+      None => {
+        activate_workspace(None, Some(monitor.clone()), state, config)?;
+      }
+    }
   }
 
   Ok(())

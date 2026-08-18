@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 
-use super::activate_workspace;
+use super::{activate_workspace, focus_spanning_workspace};
 use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
@@ -28,6 +28,18 @@ pub fn focus_workspace(
     .focused_container()
     .and_then(|focused| focused.workspace())
     .context("No workspace is currently focused.")?;
+
+  // Spanning ("virtual desktop") workspaces switch all monitors at once.
+  let spanning_group = match &target {
+    WorkspaceTarget::Name(name) => Some(name.clone()),
+    WorkspaceTarget::Recent => state.recent_workspace_name.clone(),
+    _ => None,
+  }
+  .filter(|name| config.spanning_workspace_config(name).is_some());
+
+  if let Some(group_name) = spanning_group {
+    return focus_spanning_workspace(&group_name, state, config);
+  }
 
   let (target_workspace_name, target_workspace) =
     state.workspace_by_target(&focused_workspace, target, config)?;
@@ -84,8 +96,10 @@ pub fn focus_workspace(
       deactivate_workspace(workspace, state)?;
     }
 
-    // Save the currently focused workspace as recent.
-    state.recent_workspace_name = Some(focused_workspace.config().name);
+    // Save the currently focused workspace as recent. For instances of
+    // spanning workspaces, the group name is saved instead so that
+    // recent-toggling returns to the whole group.
+    state.recent_workspace_name = Some(focused_workspace.logical_name());
     state.pending_sync.queue_cursor_jump();
   }
 

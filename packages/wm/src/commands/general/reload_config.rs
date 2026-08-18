@@ -7,7 +7,10 @@ use wm_common::{WindowRuleEvent, WmEvent};
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::{window::run_window_rules, workspace::sort_workspaces},
+  commands::{
+    window::run_window_rules,
+    workspace::{sort_workspaces, spanning_instance_config},
+  },
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
@@ -101,12 +104,40 @@ fn update_workspace_configs(
 
   for workspace in &workspaces {
     let monitor = workspace.monitor().context("No monitor.")?;
+    let current_config = workspace.config();
 
     let workspace_config = config
       .value
       .workspaces
       .iter()
-      .find(|config| config.name == workspace.config().name)
+      .find(|config| config.name == current_config.name)
+      .map(|found_config| {
+        let mut updated_config = found_config.clone();
+
+        if updated_config.monitors.is_some() {
+          // Instances of spanning workspaces are keyed by their group
+          // name, and ignore `bind_to_monitor`.
+          updated_config.spanning_group =
+            Some(updated_config.name.clone());
+          updated_config.bind_to_monitor = None;
+        }
+
+        updated_config
+      })
+      .or_else(|| {
+        // Synthesized instances of spanning workspaces aren't present in
+        // the user's config; re-derive their config from the group's.
+        current_config
+          .spanning_group
+          .as_ref()
+          .and_then(|group| config.spanning_workspace_config(group))
+          .map(|group_config| {
+            spanning_instance_config(
+              group_config,
+              current_config.name.clone(),
+            )
+          })
+      })
       .or_else(|| {
         // When the workspace config is not found, the current name of the
         // workspace has been removed. So, we reassign the first suitable
@@ -114,6 +145,7 @@ fn update_workspace_configs(
         config
           .workspace_config_for_monitor(&monitor, &workspaces)
           .or_else(|| config.next_inactive_workspace_config(&workspaces))
+          .cloned()
       });
 
     match workspace_config {
@@ -123,8 +155,8 @@ fn update_workspace_configs(
         );
       }
       Some(workspace_config) => {
-        if *workspace_config != workspace.config() {
-          workspace.set_config(workspace_config.clone());
+        if workspace_config != current_config {
+          workspace.set_config(workspace_config);
 
           sort_workspaces(&monitor, config)?;
 

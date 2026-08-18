@@ -1,3 +1,26 @@
+> [!NOTE]
+> **This is a personal fork of [GlazeWM](https://github.com/glzr-io/glazewm) that adds multi-monitor ("virtual desktop") workspaces** — see upstream feature request [glzr-io/glazewm#1012](https://github.com/glzr-io/glazewm/issues/1012). A workspace marked with `monitors: 'all'` spans every connected monitor: focusing it switches all monitors at once (like Windows 11 virtual desktops), in a single flicker-free pass, and switching back restores every window exactly where it was.
+>
+> **Usage** — mark workspaces as spanning in your `config.yaml`; the existing `focus`/`move` commands and keybindings then work per virtual desktop:
+>
+> ```yaml
+> workspaces:
+>   - name: '1'
+>     monitors: 'all'
+>   - name: '2'
+>     monitors: 'all'
+>
+> keybindings:
+>   # Switch every monitor to desktop 2 at once.
+>   - commands: ['focus --workspace 2']
+>     bindings: ['alt+2']
+>   # Move the focused window to desktop 2 on its current monitor.
+>   - commands: ['move --workspace 2']
+>     bindings: ['alt+shift+2']
+> ```
+>
+> Details: each spanning desktop is backed by one workspace instance per monitor, created on demand — so the number of connected monitors can change freely (hotplug supported; a new monitor joins the currently displayed desktop). Workspaces without `monitors: 'all'` behave exactly as in upstream GlazeWM, and both kinds can be mixed. Status bars show the desktop's name on every monitor via `displayName`. The feature lives on the `multimonitor` branch.
+
 <div align="center">
 
 > V3 is finally out - check out the changelog [here](https://github.com/glzr-io/GlazeWM/releases) 🔥

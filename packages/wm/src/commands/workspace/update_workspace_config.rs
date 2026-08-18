@@ -38,6 +38,8 @@ pub fn update_workspace_config(
       .bind_to_monitor
       .or(current_config.bind_to_monitor),
     keep_alive: new_config.keep_alive.unwrap_or(current_config.keep_alive),
+    monitors: current_config.monitors,
+    spanning_group: current_config.spanning_group.clone(),
   };
 
   workspace.set_config(updated_config);

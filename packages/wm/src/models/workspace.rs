@@ -63,6 +63,15 @@ impl Workspace {
     self.0.borrow_mut().config = config;
   }
 
+  /// Logical (user-facing) name of the workspace.
+  ///
+  /// For instances of a spanning workspace, this is the group name from
+  /// the user's config; otherwise it's the config name.
+  pub fn logical_name(&self) -> String {
+    let config = self.config();
+    config.spanning_group.unwrap_or(config.name)
+  }
+
   /// Whether the workspace is currently displayed by the parent monitor.
   pub fn is_displayed(&self) -> bool {
     self

@@ -5,9 +5,12 @@ use wm_common::WindowState;
 use crate::{
   commands::{
     container::{move_container_within_tree, set_focused_descendant},
-    workspace::activate_workspace,
+    workspace::{
+      activate_spanning_instance, activate_workspace,
+      spanning_instance_on_monitor,
+    },
   },
-  models::{WindowContainer, WorkspaceTarget},
+  models::{Monitor, WindowContainer, Workspace, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -23,21 +26,13 @@ pub fn move_window_to_workspace(
   let current_monitor =
     current_workspace.monitor().context("No monitor.")?;
 
-  let (target_workspace_name, target_workspace) =
-    state.workspace_by_target(&current_workspace, target, config)?;
-
-  // Retrieve or activate the target workspace by its name.
-  let target_workspace = match target_workspace {
-    Some(_) => anyhow::Ok(target_workspace),
-    _ => match target_workspace_name {
-      Some(name) => {
-        activate_workspace(Some(&name), None, state, config)?;
-
-        Ok(state.workspace_by_name(&name))
-      }
-      _ => Ok(None),
-    },
-  }?;
+  let target_workspace = resolve_target_workspace(
+    &current_workspace,
+    &current_monitor,
+    target,
+    state,
+    config,
+  )?;
 
   if let Some(target_workspace) = target_workspace {
     if target_workspace.id() == current_workspace.id() {
@@ -145,4 +140,46 @@ pub fn move_window_to_workspace(
   }
 
   Ok(())
+}
+
+/// Resolves the workspace to move a window to, activating it if needed.
+///
+/// Moving to a spanning ("virtual desktop") workspace targets the group's
+/// instance on the window's current monitor, so that the window stays on
+/// the same physical monitor.
+fn resolve_target_workspace(
+  current_workspace: &Workspace,
+  current_monitor: &Monitor,
+  target: WorkspaceTarget,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<Option<Workspace>> {
+  if let WorkspaceTarget::Name(name) = &target {
+    if config.spanning_workspace_config(name).is_some() {
+      let instance = spanning_instance_on_monitor(current_monitor, name);
+
+      return Ok(Some(match instance {
+        Some(instance) => instance,
+        None => {
+          activate_spanning_instance(name, current_monitor, state, config)?
+        }
+      }));
+    }
+  }
+
+  let (target_workspace_name, target_workspace) =
+    state.workspace_by_target(current_workspace, target, config)?;
+
+  // Retrieve or activate the target workspace by its name.
+  match target_workspace {
+    Some(_) => Ok(target_workspace),
+    _ => match target_workspace_name {
+      Some(name) => {
+        activate_workspace(Some(&name), None, state, config)?;
+
+        Ok(state.workspace_by_name(&name))
+      }
+      _ => Ok(None),
+    },
+  }
 }
