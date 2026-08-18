@@ -1,0 +1,109 @@
+name: Portable release
+
+# Builds unsigned portable Windows binaries and attaches them to a GitHub
+# release. Unlike the official `package` workflow, this needs no code
+# signing secrets or WiX packaging.
+#
+# Trigger either by pushing a tag (e.g. `git tag v3.9.0-mm.1 && git push
+# --tags`) or manually from the Actions tab with a version number.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version_number:
+        type: string
+        default: 0.0.0
+        description: Version number for the build and release tag (e.g. `3.9.0-mm.1`).
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 64-bit Windows (Intel & AMD)
+          - target: x86_64-pc-windows-msvc
+          # 64-bit Windows (ARM)
+          - target: aarch64-pc-windows-msvc
+
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17
+        with:
+          targets: ${{ matrix.target }}
+          toolchain: nightly
+
+      - uses: swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3
+        with:
+          shared-key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Resolve version number
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "VERSION_NUMBER=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION_NUMBER=${{ inputs.version_number }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --workspace
+
+      - name: Assemble portable bundle
+        shell: bash
+        run: |
+          BUNDLE_DIR="temp/glazewm-multimonitor"
+          mkdir -p "$BUNDLE_DIR"
+
+          cp target/${{ matrix.target }}/release/glazewm{,-cli,-watcher}.exe "$BUNDLE_DIR/"
+          cp resources/assets/multimonitor-config.yaml "$BUNDLE_DIR/config.yaml"
+
+      - name: Create zip archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path temp/glazewm-multimonitor/* `
+            -DestinationPath "glazewm-multimonitor-v$env:VERSION_NUMBER-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          name: portable-${{ matrix.target }}
+          path: '*.zip'
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: portable-*
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v${{ inputs.version_number }}"
+          fi
+
+          gh release create "$TAG" *.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "GlazeWM multimonitor $TAG (portable)" \
+            --notes "Unsigned portable build of the \`multimonitor\` branch (multi-monitor \"virtual desktop\" workspaces).
+
+          **Usage**: unzip, then run \`glazewm.exe start --config config.yaml\`. The bundled config has workspaces 1-8 spanning all monitors (\`alt+1..8\` switches every monitor at once). See the repository README for details.
+
+          **Notes**: Windows SmartScreen may warn on first run (unsigned build). Windows of elevated (admin) processes can't be managed, since UI access requires a signed installer." \
+            || gh release upload "$TAG" *.zip --repo "$GITHUB_REPOSITORY" --clobber
