@@ -32,9 +32,54 @@ pub fn handle_window_hidden(
       || window.display_state() == DisplayState::Shown)
       && !window.native().is_visible().unwrap_or(false)
     {
+      // Keep windows hidden by a native virtual desktop switch managed,
+      // so that switching back restores the exact layout.
+      #[cfg(target_os = "windows")]
+      if is_hidden_by_desktop_switch(&window, state) {
+        info!(
+          "Ignoring hide from native virtual desktop switch: {window}"
+        );
+        return Ok(());
+      }
+
       unmanage_window(window, state)?;
     }
   }
 
   Ok(())
+}
+
+/// Whether the window was hidden by a native virtual desktop switch
+/// (e.g. `ctrl+win+right`), as opposed to being genuinely hidden or
+/// deliberately moved to another virtual desktop.
+///
+/// A desktop switch shell-cloaks the windows of *all* monitors at once,
+/// so it's detected by no other managed window remaining on the current
+/// virtual desktop. In contrast, when a single window is moved to
+/// another desktop, the remaining windows stay on the current desktop
+/// and the moved window is unmanaged as usual.
+///
+/// Windows pinned to all virtual desktops count as remaining, so a
+/// desktop switch with pinned managed windows is misdetected as a
+/// deliberate move; this is an accepted limitation.
+#[cfg(target_os = "windows")]
+fn is_hidden_by_desktop_switch(
+  window: &crate::models::WindowContainer,
+  state: &WmState,
+) -> bool {
+  use wm_platform::NativeWindowWindowsExt;
+
+  use crate::traits::CommonGetters;
+
+  if !window.native().is_shell_cloaked().unwrap_or(false) {
+    return false;
+  }
+
+  !state.windows().iter().any(|other| {
+    other.id() != window.id()
+      && other
+        .native()
+        .is_on_current_virtual_desktop()
+        .unwrap_or(false)
+  })
 }

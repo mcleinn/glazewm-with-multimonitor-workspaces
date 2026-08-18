@@ -10,7 +10,7 @@ use crate::{
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
-    TilingWindow, WindowContainer,
+    TilingWindow, WindowContainer, Workspace,
   },
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -173,7 +173,7 @@ fn create_window(
   // provided), otherwise, add as a sibling of the focused container.
   let (target_parent, target_index) = match target_parent {
     Some(parent) => (parent, 0),
-    None => insertion_target(&window_state, state)?,
+    None => insertion_target(&window_state, &nearest_workspace, state)?,
   };
 
   let target_workspace =
@@ -311,16 +311,22 @@ fn window_state_to_create(
 /// Gets where to insert a new window in the container tree.
 ///
 /// Rules:
+/// - Windows are inserted into the workspace of the monitor they
+///   physically appear on. This differs from the focused workspace e.g.
+///   when windows reappear after a native virtual desktop switch, or when
+///   an application spawns a window on a non-focused monitor.
 /// - For non-tiling windows: Always append to the workspace.
 /// - For tiling windows:
-///   1. Try to insert after the focused tiling window if one exists.
-///   2. If a non-tiling window is focused, try to insert after the first
-///      tiling window found.
+///   1. Try to insert after the focused tiling window if it's in the
+///      target workspace.
+///   2. Otherwise, try to insert after the target workspace's first tiling
+///      window in focus order.
 ///   3. If no tiling windows exist, append to the workspace.
 ///
 /// Returns tuple of (parent container, insertion index).
 fn insertion_target(
   window_state: &WindowState,
+  nearest_workspace: &Workspace,
   state: &WmState,
 ) -> anyhow::Result<(Container, usize)> {
   let focused_container =
@@ -329,12 +335,23 @@ fn insertion_target(
   let focused_workspace =
     focused_container.workspace().context("No workspace.")?;
 
+  let is_focused_workspace =
+    nearest_workspace.id() == focused_workspace.id();
+
+  let target_workspace = if is_focused_workspace {
+    focused_workspace
+  } else {
+    nearest_workspace.clone()
+  };
+
   // For tiling windows, try to find a suitable tiling window to insert
   // next to.
   if *window_state == WindowState::Tiling {
     let sibling = match focused_container {
-      Container::TilingWindow(_) => Some(focused_container),
-      _ => focused_workspace
+      Container::TilingWindow(_) if is_focused_workspace => {
+        Some(focused_container)
+      }
+      _ => target_workspace
         .descendant_focus_order()
         .find(Container::is_tiling_window),
     };
@@ -349,7 +366,7 @@ fn insertion_target(
 
   // Default to appending to workspace.
   Ok((
-    focused_workspace.clone().into(),
-    focused_workspace.child_count(),
+    target_workspace.clone().into(),
+    target_workspace.child_count(),
   ))
 }
