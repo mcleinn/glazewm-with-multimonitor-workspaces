@@ -1,15 +1,13 @@
 use anyhow::Context;
-#[cfg(target_os = "macos")]
 use wm_common::try_warn;
 use wm_platform::{MouseButton, MouseEvent};
 
 use crate::{
-  commands::container::set_focused_descendant, traits::CommonGetters,
-  user_config::UserConfig, wm_state::WmState,
-};
-#[cfg(target_os = "macos")]
-use crate::{
-  events::handle_window_moved_or_resized_end, traits::WindowGetters,
+  commands::container::set_focused_descendant,
+  events::handle_window_moved_or_resized_end,
+  traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_mouse_move(
@@ -24,20 +22,24 @@ pub fn handle_mouse_move(
     return Ok(());
   }
 
-  // On macOS, detect when a window drag operation has ended by listening
-  // to the release of left click.
+  // Detect when a window drag operation has ended by listening to the
+  // release of left click.
   //
-  // This cannot be used for Windows, since it leads to race conditions
-  // where the mouse event comes in before the `MovedOrResized` event with
+  // On Windows, this is only done for drags that were detected when the
+  // window was first managed (e.g. a torn-off browser tab), since the OS
+  // might never emit a `MovedOrResized` event with `is_interactive_end`
+  // for those. For regular drags, it leads to race conditions where the
+  // mouse event comes in before the `MovedOrResized` event with
   // `is_interactive_end`. For example, if the user drags to maximize a
   // window, the WS_MAXIMIZED state is sometimes set after the mouse event.
-  #[cfg(target_os = "macos")]
   if let MouseEvent::ButtonUp { button, .. } = event {
     if *button == MouseButton::Left {
-      let active_drag_windows = state
-        .windows()
-        .into_iter()
-        .filter(|window| window.active_drag().is_some());
+      let active_drag_windows =
+        state.windows().into_iter().filter(|window| {
+          window.active_drag().is_some_and(|active_drag| {
+            cfg!(target_os = "macos") || active_drag.is_from_manage
+          })
+        });
 
       // Only one window should ever be actively dragged at a time, but
       // just in case, iterate over all active drag windows.

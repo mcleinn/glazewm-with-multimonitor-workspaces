@@ -1,12 +1,15 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
-use wm_platform::{NativeWindow, RectDelta};
+use wm_common::{
+  try_warn, ActiveDrag, ActiveDragOperation, FloatingStateConfig,
+  WindowRuleEvent, WindowState, WmEvent,
+};
+use wm_platform::{MouseButton, NativeWindow, RectDelta};
 
 use crate::{
   commands::{
     container::{attach_container, set_focused_descendant},
-    window::run_window_rules,
+    window::{run_window_rules, update_window_state},
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
@@ -71,15 +74,102 @@ pub fn manage_window(
       window.workspace().context("No workspace.")?,
     );
 
-    // Sibling containers need to be redrawn if the window is tiling.
-    state.pending_sync.queue_container_to_redraw(
-      if window.state() == WindowState::Tiling {
-        window.parent().context("No parent.")?
-      } else {
-        window.into()
-      },
-    );
+    if is_created_mid_drag(&window, state)? {
+      begin_drag_from_manage(&window, state, config)?;
+    } else {
+      // Sibling containers need to be redrawn if the window is tiling.
+      state.pending_sync.queue_container_to_redraw(
+        if window.state() == WindowState::Tiling {
+          window.parent().context("No parent.")?
+        } else {
+          window.into()
+        },
+      );
+    }
   }
+
+  Ok(())
+}
+
+/// Checks whether a newly managed window is already being dragged by the
+/// user.
+///
+/// This is the case for windows that are created mid-drag, e.g. a browser
+/// tab that is torn off into its own window. Such windows shouldn't be
+/// placed until the drag ends, otherwise they'd snap to a tiling position
+/// (and potentially a different monitor) under the user's cursor.
+fn is_created_mid_drag(
+  window: &WindowContainer,
+  state: &WmState,
+) -> anyhow::Result<bool> {
+  let is_valid_state = matches!(
+    window.state(),
+    WindowState::Tiling | WindowState::Floating(_)
+  );
+
+  if state.is_paused
+    || !is_valid_state
+    || !state.dispatcher.is_mouse_down(&MouseButton::Left)
+  {
+    return Ok(false);
+  }
+
+  // Only one window can be dragged at a time.
+  let is_dragging_other_window = state.windows().iter().any(|other| {
+    other.id() != window.id() && other.active_drag().is_some()
+  });
+
+  if is_dragging_other_window {
+    return Ok(false);
+  }
+
+  let cursor_position = state.dispatcher.cursor_position()?;
+  Ok(
+    window
+      .native_properties()
+      .frame
+      .contains_point(&cursor_position),
+  )
+}
+
+/// Starts a drag for a window that was created mid-drag.
+///
+/// The window is transitioned to floating (as is done for regular drags of
+/// tiling windows) and left at its current position, so that the OS drag
+/// operation isn't interfered with. Placement is deferred until the drag
+/// ends, at which point the window is dropped at the cursor position.
+fn begin_drag_from_manage(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  info!("Window created mid-drag, deferring placement: {window}");
+
+  let is_from_floating =
+    matches!(window.state(), WindowState::Floating(_));
+  let initial_position = window.native_properties().frame;
+
+  let window = update_window_state(
+    window.clone(),
+    WindowState::Floating(FloatingStateConfig {
+      centered: false,
+      ..config.value.window_behavior.state_defaults.floating
+    }),
+    state,
+    config,
+  )?;
+
+  // The window mustn't be repositioned while it's being dragged.
+  state
+    .pending_sync
+    .dequeue_container_from_redraw(window.clone());
+
+  window.set_active_drag(Some(ActiveDrag {
+    operation: Some(ActiveDragOperation::Move),
+    is_from_floating,
+    initial_position,
+    is_from_manage: true,
+  }));
 
   Ok(())
 }

@@ -186,6 +186,7 @@ pub fn handle_window_moved_or_resized(
         // `WindowEvent::MovedOrResized` event.
         #[cfg(target_os = "macos")]
         initial_position: frame_position.clone(),
+        is_from_manage: false,
       }));
 
       #[cfg(target_os = "windows")]
@@ -349,6 +350,13 @@ pub fn handle_window_moved_or_resized(
             state,
           )?;
         }
+      }
+      // A tiling window was moved by the OS without a tracked drag (e.g.
+      // the drag started before the window was managed, or the drag was
+      // already ended on release of the mouse button). Snap it back to
+      // its tiling position.
+      WindowState::Tiling if is_interactive_end && !state.is_paused => {
+        state.pending_sync.queue_container_to_redraw(window);
       }
       _ => {}
     }

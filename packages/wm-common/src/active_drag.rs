@@ -16,6 +16,14 @@ pub struct ActiveDrag {
   ///
   /// Used to calculate movement distance.
   pub initial_position: Rect,
+
+  /// Whether the drag was detected when the window was first managed.
+  ///
+  /// This is the case for windows that are created while the user is
+  /// already dragging them (e.g. a browser tab torn off into its own
+  /// window). The OS might never emit a drag end event for such windows,
+  /// so the drag is additionally ended on release of the mouse button.
+  pub is_from_manage: bool,
 }
 
 #[derive(Debug, Copy, Clone, Deserialize, PartialEq, Serialize)]
