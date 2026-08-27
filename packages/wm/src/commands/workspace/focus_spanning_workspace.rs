@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
+
 use anyhow::Context;
 use tracing::info;
 use wm_common::WmEvent;
 
 use super::{
   activate_spanning_instance, deactivate_workspace, focus_workspace,
+  merge_spanning_instances,
 };
 use crate::{
   commands::container::set_focused_descendant,
@@ -128,9 +131,9 @@ fn sync_monitor_to_group(
     .displayed_workspace()
     .context("No workspace is currently displayed.")?;
 
-  let instance = spanning_instance_on_monitor(monitor, group_name);
+  let mut instances = spanning_instances_on_monitor(monitor, group_name);
 
-  let (instance, is_new_instance) = match instance {
+  let (instance, mut has_changes) = match instances.pop_front() {
     Some(instance) => (instance, false),
     None => (
       activate_spanning_instance(group_name, monitor, state, config)?,
@@ -138,11 +141,21 @@ fn sync_monitor_to_group(
     ),
   };
 
+  // Safety net: absorb any duplicate instances (e.g. left over from a
+  // monitor removal) so that no window sits in a hidden duplicate.
+  for duplicate in instances {
+    merge_spanning_instances(&duplicate, &instance, state)?;
+    state
+      .pending_sync
+      .queue_containers_to_redraw(instance.tiling_children());
+    has_changes = true;
+  }
+
   let is_focused_monitor = monitor.id() == focused_monitor.id();
   let is_already_displayed = displayed_workspace.id() == instance.id();
 
   if is_already_displayed && !is_focused_monitor {
-    return Ok(is_new_instance);
+    return Ok(has_changes);
   }
 
   // Focus the last-focused container within the instance, falling back
@@ -165,7 +178,7 @@ fn sync_monitor_to_group(
   }
 
   if is_already_displayed {
-    return Ok(is_new_instance);
+    return Ok(has_changes);
   }
 
   state
@@ -192,17 +205,29 @@ pub fn spanning_instance_on_monitor(
   monitor: &Monitor,
   group_name: &str,
 ) -> Option<Workspace> {
+  spanning_instances_on_monitor(monitor, group_name).pop_front()
+}
+
+/// All workspace instances of a spanning group on the given monitor,
+/// ordered from most to least recently focused.
+pub fn spanning_instances_on_monitor(
+  monitor: &Monitor,
+  group_name: &str,
+) -> VecDeque<Workspace> {
   monitor
     .borrow_child_focus_order()
     .iter()
     .filter_map(|workspace_id| monitor.child_by_id(workspace_id))
     .filter_map(|container| container.as_workspace().cloned())
-    .find(|workspace| workspace.logical_name() == group_name)
+    .filter(|workspace| workspace.logical_name() == group_name)
+    .collect()
 }
 
 #[cfg(test)]
 mod tests {
-  use super::spanning_instance_on_monitor;
+  use super::{
+    spanning_instance_on_monitor, spanning_instances_on_monitor,
+  };
   use crate::{
     commands::container::set_focused_descendant,
     models::{Monitor, Workspace},
@@ -257,6 +282,32 @@ mod tests {
     let instance = spanning_instance_on_monitor(&monitor, "2")
       .expect("Instance should be found.");
     assert_eq!(instance.config().name, "2#dup");
+  }
+
+  #[test]
+  fn lists_all_duplicates_by_recency() {
+    let duplicate = mock_instance("2#dup", "2");
+
+    let monitor = Monitor::mock()
+      .workspaces(vec![
+        mock_instance("2", "2"),
+        Workspace::mock().name("1".to_string()).call(),
+        duplicate.clone(),
+      ])
+      .call();
+
+    set_focused_descendant(
+      &duplicate.clone().into(),
+      Some(&monitor.clone().into()),
+    );
+
+    let names = spanning_instances_on_monitor(&monitor, "2")
+      .iter()
+      .map(|workspace| workspace.config().name)
+      .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["2#dup".to_string(), "2".to_string()]);
+    assert!(spanning_instances_on_monitor(&monitor, "3").is_empty());
   }
 
   #[test]
