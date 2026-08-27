@@ -19,7 +19,7 @@
 >     bindings: ['alt+shift+2']
 > ```
 >
-> Details: each spanning desktop is backed by one workspace instance per monitor, created on demand — so the number of connected monitors can change freely (hotplug supported; a new monitor joins the currently displayed desktop). Workspaces without `monitors: 'all'` behave exactly as in upstream GlazeWM, and both kinds can be mixed. Status bars show the desktop's name on every monitor via `displayName`. The feature lives on the `multimonitor` branch.
+> Details: each spanning desktop is backed by one workspace instance per monitor, created on demand — so the number of connected monitors can change freely (hotplug supported; a new monitor joins the currently displayed desktop, and when a monitor is disconnected its windows are merged into the same desktop on a remaining monitor, so nothing ends up hidden). Workspaces without `monitors: 'all'` behave exactly as in upstream GlazeWM, and both kinds can be mixed. Status bars show the desktop's name on every monitor via `displayName`. The feature lives on the `multimonitor` branch.
 >
 > This fork also fixes GlazeWM's incompatibility with **native Windows virtual desktops**: in upstream, pressing `ctrl+win+right` and then `ctrl+win+left` scrambles the layout — all windows get re-tiled onto a single monitor. Here, windows hidden by a native desktop switch stay managed at their exact positions, so switching away and back leaves the layout untouched. Additionally, windows that (re)appear on a non-focused monitor are now tiled into that monitor's workspace instead of being pulled onto the focused one. Moving a single window to another native virtual desktop still untiles it as before (detected via `IsWindowOnCurrentVirtualDesktop`).
 
