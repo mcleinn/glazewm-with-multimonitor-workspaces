@@ -1,10 +1,13 @@
 use anyhow::Context;
 use wm_common::try_warn;
+#[cfg(target_os = "windows")]
+use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{MouseButton, MouseEvent};
 
 use crate::{
   commands::container::set_focused_descendant,
   events::handle_window_moved_or_resized_end,
+  models::WindowContainer,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -26,20 +29,20 @@ pub fn handle_mouse_move(
   // release of left click.
   //
   // On Windows, this is only done for drags that were detected when the
-  // window was first managed (e.g. a torn-off browser tab), since the OS
-  // might never emit a `MovedOrResized` event with `is_interactive_end`
-  // for those. For regular drags, it leads to race conditions where the
-  // mouse event comes in before the `MovedOrResized` event with
-  // `is_interactive_end`. For example, if the user drags to maximize a
-  // window, the WS_MAXIMIZED state is sometimes set after the mouse event.
+  // window was first managed (e.g. a torn-off browser tab) and only if
+  // the window isn't in an OS move/size loop, since the OS might never
+  // emit a `MovedOrResized` event with `is_interactive_end` for those.
+  // Otherwise, it leads to race conditions where the mouse event comes in
+  // before the `MovedOrResized` event with `is_interactive_end`, and the
+  // OS then overrides the window's position when its loop ends. For
+  // example, if the user drags to maximize a window, the WS_MAXIMIZED
+  // state is sometimes set after the mouse event.
   if let MouseEvent::ButtonUp { button, .. } = event {
     if *button == MouseButton::Left {
-      let active_drag_windows =
-        state.windows().into_iter().filter(|window| {
-          window.active_drag().is_some_and(|active_drag| {
-            cfg!(target_os = "macos") || active_drag.is_from_manage
-          })
-        });
+      let active_drag_windows = state
+        .windows()
+        .into_iter()
+        .filter(should_end_drag_on_button_up);
 
       // Only one window should ever be actively dragged at a time, but
       // just in case, iterate over all active drag windows.
@@ -129,4 +132,25 @@ pub fn handle_mouse_move(
   }
 
   Ok(())
+}
+
+/// Whether a window's active drag should be ended on release of the left
+/// mouse button.
+fn should_end_drag_on_button_up(window: &WindowContainer) -> bool {
+  let Some(active_drag) = window.active_drag() else {
+    return false;
+  };
+
+  #[cfg(target_os = "macos")]
+  {
+    let _ = active_drag;
+    true
+  }
+  #[cfg(target_os = "windows")]
+  {
+    // Drags within an OS move/size loop are ended by the `MovedOrResized`
+    // event with `is_interactive_end` instead.
+    active_drag.is_from_manage
+      && !window.native().is_in_move_size_loop().unwrap_or(false)
+  }
 }

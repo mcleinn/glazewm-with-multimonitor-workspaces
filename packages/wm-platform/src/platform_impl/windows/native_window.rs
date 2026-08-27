@@ -22,15 +22,16 @@ use windows::{
       },
       WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetClassNameW, GetDesktopWindow,
-        GetForegroundWindow, GetLayeredWindowAttributes, GetShellWindow,
-        GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-        IsZoomed, SendNotifyMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
-        SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
-        GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST, HWND_TOP,
-        HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-        LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+        GetForegroundWindow, GetGUIThreadInfo, GetLayeredWindowAttributes,
+        GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+        IsWindowVisible, IsZoomed, SendNotifyMessageW,
+        SetForegroundWindow, SetLayeredWindowAttributes,
+        SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
+        ShowWindowAsync, WindowFromPoint, GA_ROOT, GUITHREADINFO,
+        GUI_INMOVESIZE, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST,
+        HWND_TOP, HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS,
+        LWA_ALPHA, LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
         SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
@@ -365,6 +366,24 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_in_move_size_loop`].
+  pub(crate) fn is_in_move_size_loop(&self) -> crate::Result<bool> {
+    let thread_id = unsafe { GetWindowThreadProcessId(self.hwnd(), None) };
+
+    let mut gui_info = GUITHREADINFO {
+      #[allow(clippy::cast_possible_truncation)]
+      cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+      ..Default::default()
+    };
+
+    unsafe { GetGUIThreadInfo(thread_id, &raw mut gui_info) }?;
+
+    Ok(
+      gui_info.flags.contains(GUI_INMOVESIZE)
+        && gui_info.hwndMoveSize == self.hwnd(),
+    )
   }
 
   /// Implements [`NativeWindowWindowsExt::has_window_style`].

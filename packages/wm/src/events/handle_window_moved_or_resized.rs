@@ -176,15 +176,16 @@ pub fn handle_window_moved_or_resized(
           window.state(),
           WindowState::Floating(_)
         ),
-        #[cfg(target_os = "windows")]
-        initial_position: old_frame_position.clone(),
-        // The updated frame position is used here instead of the initial
-        // frame position due to a quirk on macOS. When we resize an
-        // AXUIElement to a value outside the allowed min/max width &
-        // height, macOS doesn't actually apply that size. However, it
-        // still reports the value we attempted to set until a subsequent
+        // The updated frame position is used here instead of the cached
+        // frame position, since the cached position can be stale (e.g. if
+        // the window was redrawn without a `WindowEvent::MovedOrResized`
+        // event having been processed yet). A stale size would cause the
+        // drag to be misclassified as a resize. On macOS, there's the
+        // additional quirk that when we resize an AXUIElement to a value
+        // outside the allowed min/max width & height, macOS doesn't
+        // actually apply that size. However, it still reports the value
+        // we attempted to set until a subsequent
         // `WindowEvent::MovedOrResized` event.
-        #[cfg(target_os = "macos")]
         initial_position: frame_position.clone(),
         is_from_manage: false,
       }));

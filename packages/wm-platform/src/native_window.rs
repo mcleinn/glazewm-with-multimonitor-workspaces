@@ -185,6 +185,16 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_owner_window(&self) -> bool;
 
+  /// Whether the window is currently in an OS move/size loop (i.e. is
+  /// being interactively moved or resized via the system's modal loop).
+  ///
+  /// The OS emits an `EVENT_SYSTEM_MOVESIZEEND` event once the loop ends.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_in_move_size_loop(&self) -> crate::Result<bool>;
+
   /// Whether the window has the given window style flag(s) set.
   ///
   /// # Platform-specific
@@ -373,6 +383,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_owner_window(&self) -> bool {
     self.inner.has_owner_window()
+  }
+
+  fn is_in_move_size_loop(&self) -> crate::Result<bool> {
+    self.inner.is_in_move_size_loop()
   }
 
   fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
