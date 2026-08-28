@@ -70,7 +70,13 @@ pub fn handle_window_moved_or_resized(
         return handle_window_moved_or_resized_end(&window, state, config);
       }
 
-      return update_drag_state(&window, &frame_position, state, config);
+      return update_drag_state(
+        &window,
+        &old_frame_position,
+        &frame_position,
+        state,
+        config,
+      );
     }
 
     let old_is_maximized = window.native_properties().is_maximized;
@@ -191,7 +197,13 @@ pub fn handle_window_moved_or_resized(
       }));
 
       #[cfg(target_os = "windows")]
-      update_drag_state(&window, &frame_position, state, config)?;
+      update_drag_state(
+        &window,
+        &old_frame_position,
+        &frame_position,
+        state,
+        config,
+      )?;
 
       return Ok(());
     }
@@ -414,8 +426,19 @@ pub fn update_floating_window_position(
 /// This function determines whether a window is being moved or resized and
 /// updates its operation state accordingly. If the window is being moved,
 /// it's set to floating mode.
+///
+/// A drag is classified as a move once the frame's position changes while
+/// its size stays the same between two consecutive events. During a
+/// genuine resize this never happens, since the anchored edges stay fixed
+/// (i.e. the position is fully determined by the size). A `Resize`
+/// classification is therefore tentative and can be upgraded to `Move` on
+/// a later event, which handles apps that resize their window at the start
+/// of a drag (e.g. Windows Terminal restoring its preferred size). The
+/// reverse never happens: a `Move` stays a move even if the app resizes
+/// the window mid-drag (e.g. when crossing a DPI boundary).
 fn update_drag_state(
   window: &WindowContainer,
+  old_frame_position: &Rect,
   frame_position: &Rect,
   state: &mut WmState,
   config: &UserConfig,
@@ -429,24 +452,35 @@ fn update_drag_state(
     return Ok(());
   }
 
-  // Determine the drag operation if not already set.
-  let is_move = if let Some(operation) = active_drag.operation {
-    matches!(operation, ActiveDragOperation::Move)
+  // Determine the drag operation if not yet classified as a move.
+  let is_move = if let Some(ActiveDragOperation::Move) =
+    active_drag.operation
+  {
+    true
   } else {
-    let is_move = *frame_position != active_drag.initial_position
-      && frame_position.height() == active_drag.initial_position.height()
-      && frame_position.width() == active_drag.initial_position.width();
+    let is_move = *frame_position != *old_frame_position
+      && frame_position.height() == old_frame_position.height()
+      && frame_position.width() == old_frame_position.width();
 
-    let operation = if is_move {
-      ActiveDragOperation::Move
-    } else {
-      ActiveDragOperation::Resize
-    };
+    if is_move || active_drag.operation.is_none() {
+      let operation = if is_move {
+        ActiveDragOperation::Move
+      } else {
+        ActiveDragOperation::Resize
+      };
 
-    window.set_active_drag(Some(ActiveDrag {
-      operation: Some(operation),
-      ..active_drag.clone()
-    }));
+      tracing::debug!(
+        "Drag classified as {:?} (previous: {:?}, current: {:?}): {window}",
+        operation,
+        old_frame_position,
+        frame_position,
+      );
+
+      window.set_active_drag(Some(ActiveDrag {
+        operation: Some(operation),
+        ..active_drag.clone()
+      }));
+    }
 
     is_move
   };
