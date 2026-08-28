@@ -24,6 +24,10 @@
 > This fork also fixes GlazeWM's incompatibility with **native Windows virtual desktops**: in upstream, pressing `ctrl+win+right` and then `ctrl+win+left` scrambles the layout — all windows get re-tiled onto a single monitor. Here, windows hidden by a native desktop switch stay managed at their exact positions, so switching away and back leaves the layout untouched. Additionally, windows that (re)appear on a non-focused monitor are now tiled into that monitor's workspace instead of being pulled onto the focused one. Moving a single window to another native virtual desktop still untiles it as before (detected via `IsWindowOnCurrentVirtualDesktop`).
 >
 > Also fixed: **dragging a browser tab out into its own window** (Chrome, Edge, …) now drops the new window where you release it — including on another monitor — instead of tiling it next to the original window mid-drag (upstream issue [glzr-io/glazewm#1080](https://github.com/glzr-io/glazewm/issues/1080)). Windows that are created while already being dragged are left alone until the drag ends.
+>
+> Also fixed: **dragging a window whose app resizes it on drag start** (e.g. Windows Terminal restoring its preferred size) no longer snaps back to its old tile on drop — the drag was previously misclassified as a resize.
+>
+> New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior).
 
 <div align="center">
 
