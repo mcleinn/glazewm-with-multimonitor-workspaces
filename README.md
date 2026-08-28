@@ -27,7 +27,7 @@
 >
 > Also fixed: **dragging a window whose app resizes it on drag start** (e.g. Windows Terminal restoring its preferred size) no longer snaps back to its old tile on drop — the drag was previously misclassified as a resize.
 >
-> New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior). The `config.yaml` bundled with the release zips has it enabled; if you keep an existing config, add `initial_monitor: 'cursor'` under `window_behavior:` yourself.
+> New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior). The fork's default config — both the `config.yaml` bundled with the release zips and the config generated on first start — has it enabled; if you keep an existing config, add `initial_monitor: 'cursor'` under `window_behavior:` yourself.
 
 <div align="center">
 
@@ -106,7 +106,7 @@ Below is a cheat sheet of all available commands and their default keybindings.
 
 ## Config documentation
 
-The [default config](https://github.com/glzr-io/glazewm/blob/main/resources/assets/sample-config.yaml) file is generated at `%userprofile%\.glzr\glazewm\config.yaml`.
+The [default config](/resources/assets/multimonitor-config.yaml) file is generated at `%userprofile%\.glzr\glazewm\config.yaml`. (In this fork it's the multimonitor config with spanning workspaces and `initial_monitor: 'cursor'` enabled; the upstream-behavior sample is kept at [sample-config.yaml](/resources/assets/sample-config.yaml).)
 
 To use a different config file location, you can launch the GlazeWM executable with the CLI argument `--config="..."`, like so:
 

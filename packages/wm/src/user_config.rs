@@ -12,8 +12,14 @@ use crate::{
 };
 
 /// Resource string for the sample config file.
+///
+/// This fork generates the multimonitor config (spanning workspaces via
+/// `monitors: 'all'` and `initial_monitor: 'cursor'` enabled) instead of
+/// the upstream sample config, since the fork's features are why it's
+/// installed in the first place. `sample-config.yaml` is kept as the
+/// upstream-behavior reference.
 const SAMPLE_CONFIG: &str =
-  include_str!("../../../resources/assets/sample-config.yaml");
+  include_str!("../../../resources/assets/multimonitor-config.yaml");
 
 #[derive(Debug)]
 pub struct UserConfig {
