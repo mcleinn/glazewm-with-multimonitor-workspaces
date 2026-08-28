@@ -101,6 +101,13 @@ window_behavior:
   # Allowed values: 'tiling', 'floating'.
   initial_state: 'tiling'
 
+  # Which monitor new windows are placed on. 'spawn' keeps them on the
+  # monitor they appear on, whereas 'cursor' places them on the monitor
+  # where the cursor is (e.g. the monitor whose taskbar was clicked to
+  # launch the application).
+  # Allowed values: 'spawn', 'cursor'.
+  initial_monitor: 'cursor'
+
   # Sets the default options for when a new window is created. This also
   # changes the defaults for when the state change commands, like
   # `set-floating`, are used without any flags.

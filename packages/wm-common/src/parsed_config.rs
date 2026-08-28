@@ -169,6 +169,9 @@ pub struct WindowBehaviorConfig {
   /// New windows are created in this state whenever possible.
   pub initial_state: InitialWindowState,
 
+  /// Which monitor new windows are placed on.
+  pub initial_monitor: InitialWindowMonitor,
+
   /// Sets the default options for when a new window is created. This also
   /// changes the defaults for when the state change commands, like
   /// `set_floating`, are used without any flags.
@@ -181,6 +184,20 @@ pub enum InitialWindowState {
   #[default]
   Tiling,
   Floating,
+}
+
+/// Which monitor a newly managed window is placed on.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum InitialWindowMonitor {
+  /// The monitor the window physically spawns on.
+  #[default]
+  Spawn,
+  /// The monitor the cursor is on when the window appears (e.g. the
+  /// monitor whose taskbar was clicked to launch the application).
+  Cursor,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

@@ -2,7 +2,7 @@ use anyhow::Context;
 use tracing::info;
 use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, FloatingStateConfig,
-  WindowRuleEvent, WindowState, WmEvent,
+  InitialWindowMonitor, WindowRuleEvent, WindowState, WmEvent,
 };
 use wm_platform::{MouseButton, NativeWindow, RectDelta};
 
@@ -247,9 +247,24 @@ fn create_window(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
-  let nearest_monitor = state
+  let spawn_monitor = state
     .nearest_monitor(&native_window)
     .context("No nearest monitor.")?;
+
+  // With `InitialWindowMonitor::Cursor`, windows are placed on the
+  // monitor under the cursor (e.g. the monitor whose taskbar was clicked
+  // to launch the application) instead of the monitor the OS spawned the
+  // window on.
+  let nearest_monitor = match config.value.window_behavior.initial_monitor
+  {
+    InitialWindowMonitor::Cursor => state
+      .dispatcher
+      .cursor_position()
+      .ok()
+      .and_then(|cursor| state.monitor_at_point(&cursor)),
+    InitialWindowMonitor::Spawn => None,
+  }
+  .unwrap_or_else(|| spawn_monitor.clone());
 
   let nearest_workspace = nearest_monitor
     .displayed_workspace()
@@ -340,9 +355,7 @@ fn create_window(
 
   // The OS might spawn the window on a different monitor to the target
   // parent, so adjustments might need to be made because of DPI.
-  if nearest_monitor
-    .has_dpi_difference(&window_container.clone().into())?
-  {
+  if spawn_monitor.has_dpi_difference(&window_container.clone().into())? {
     window_container.set_has_pending_dpi_adjustment(true);
   }
 
