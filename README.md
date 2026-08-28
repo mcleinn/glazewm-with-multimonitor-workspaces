@@ -27,7 +27,7 @@
 >
 > Also fixed: **dragging a window whose app resizes it on drag start** (e.g. Windows Terminal restoring its preferred size) no longer snaps back to its old tile on drop — the drag was previously misclassified as a resize.
 >
-> New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior).
+> New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior). The `config.yaml` bundled with the release zips has it enabled; if you keep an existing config, add `initial_monitor: 'cursor'` under `window_behavior:` yourself.
 
 <div align="center">
 
