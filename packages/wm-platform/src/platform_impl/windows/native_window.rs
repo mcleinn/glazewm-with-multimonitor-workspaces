@@ -6,17 +6,27 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
-    Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+    Graphics::{
+      Dwm::{
+        DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
+        DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
+        DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      },
+      Gdi::{MonitorFromRect, MONITOR_DEFAULTTONEAREST},
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
       PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::{
+      HiDpi::{
+        GetAwarenessFromDpiAwarenessContext, GetDpiForMonitor,
+        GetDpiForSystem, GetDpiForWindow, GetWindowDpiAwarenessContext,
+        SetThreadDpiAwarenessContext, DPI_AWARENESS_CONTEXT,
+        DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, DPI_AWARENESS_CONTEXT_UNAWARE,
+        DPI_AWARENESS_PER_MONITOR_AWARE, MDT_EFFECTIVE_DPI,
+      },
       Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
       },
@@ -52,6 +62,115 @@ use crate::{
 /// Magic number used to identify programmatic mouse inputs from our own
 /// process.
 pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
+
+/// DPI of a display with no scaling applied.
+const DEFAULT_SCREEN_DPI: u32 = 96;
+
+/// RAII guard that temporarily overrides the calling thread's DPI
+/// awareness context.
+///
+/// The previous context is restored when the guard is dropped.
+struct ThreadDpiGuard(isize);
+
+impl ThreadDpiGuard {
+  /// Overrides the calling thread's DPI awareness context.
+  ///
+  /// Returns `None` if the context could not be changed, in which case the
+  /// thread's existing context is left in place.
+  fn new(context: DPI_AWARENESS_CONTEXT) -> Option<Self> {
+    // SAFETY: Only affects the calling thread. Returns the context that
+    // was replaced, or a null context if `context` is invalid.
+    let previous = unsafe { SetThreadDpiAwarenessContext(context) };
+
+    (previous.0 != 0).then_some(Self(previous.0))
+  }
+}
+
+impl Drop for ThreadDpiGuard {
+  fn drop(&mut self) {
+    // SAFETY: `self.0` was returned by `SetThreadDpiAwarenessContext`, so
+    // it is a valid context for this thread.
+    unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT(self.0)) };
+  }
+}
+
+/// Returns the DPI awareness context in which coordinates for `rect` are
+/// interpreted as physical pixels when positioning `hwnd`.
+///
+/// Windows rescales `SetWindowPos` and `SetWindowPlacement` calls made
+/// from a per-monitor aware thread when the target window is *not* itself
+/// per-monitor aware and the requested rect touches a monitor whose DPI
+/// differs from the window's. Since a window's rect is expanded by its
+/// shadow borders before being applied, this affects any such window
+/// placed against the edge of a monitor that borders one with a different
+/// scaling factor; the window then lands at the wrong position and size.
+/// Issuing the call under a context whose coordinate space maps 1:1 onto
+/// the target monitor avoids the rescaling.
+///
+/// Returns `None` when the window is unaffected, in which case the
+/// thread's current context should be left untouched. This is the case
+/// for all per-monitor aware windows, so their positioning is unchanged.
+fn untranslated_dpi_context(
+  hwnd: HWND,
+  rect: &Rect,
+) -> Option<DPI_AWARENESS_CONTEXT> {
+  // SAFETY: `hwnd` is a valid window handle.
+  let awareness = unsafe {
+    GetAwarenessFromDpiAwarenessContext(GetWindowDpiAwarenessContext(hwnd))
+  };
+
+  // Per-monitor aware windows are never rescaled.
+  if awareness == DPI_AWARENESS_PER_MONITOR_AWARE {
+    return None;
+  }
+
+  // SAFETY: `hwnd` is a valid window handle.
+  let window_dpi = unsafe { GetDpiForWindow(hwnd) };
+
+  let target_rect = RECT {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  };
+
+  // SAFETY: `target_rect` is a valid rect, and `MONITOR_DEFAULTTONEAREST`
+  // guarantees that a monitor handle is returned.
+  let monitor = unsafe {
+    MonitorFromRect(&raw const target_rect, MONITOR_DEFAULTTONEAREST)
+  };
+
+  let mut dpi_x = u32::default();
+  let mut dpi_y = u32::default();
+
+  // SAFETY: `monitor` is a valid monitor handle.
+  unsafe {
+    GetDpiForMonitor(
+      monitor,
+      MDT_EFFECTIVE_DPI,
+      &raw mut dpi_x,
+      &raw mut dpi_y,
+    )
+  }
+  .ok()?;
+
+  // The window is only rescaled when its DPI differs from the DPI of the
+  // monitor it's being placed on.
+  if window_dpi == dpi_y {
+    return None;
+  }
+
+  // SAFETY: No preconditions.
+  let system_dpi = unsafe { GetDpiForSystem() };
+
+  match dpi_y {
+    DEFAULT_SCREEN_DPI => Some(DPI_AWARENESS_CONTEXT_UNAWARE),
+    dpi if dpi == system_dpi => Some(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE),
+    // Leave other configurations untouched rather than guess at a context
+    // that might place the window even less accurately.
+    _ => None,
+  }
+}
 
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]
@@ -423,6 +542,11 @@ impl NativeWindow {
       WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
     };
 
+    // Held for the duration of the call so that Windows doesn't rescale
+    // the requested rect for windows that aren't per-monitor DPI aware.
+    let _dpi_guard = untranslated_dpi_context(self.hwnd(), rect)
+      .and_then(ThreadDpiGuard::new);
+
     unsafe {
       SetWindowPos(
         self.hwnd(),
@@ -474,6 +598,12 @@ impl NativeWindow {
           },
           ..Default::default()
         };
+
+        // Held for the duration of the call so that Windows doesn't
+        // rescale the requested rect for windows that aren't per-monitor
+        // DPI aware.
+        let _dpi_guard = untranslated_dpi_context(self.hwnd(), rect)
+          .and_then(ThreadDpiGuard::new);
 
         unsafe { SetWindowPlacement(self.hwnd(), &raw const placement) }?;
         Ok(())
