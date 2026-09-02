@@ -12,8 +12,10 @@ use crate::{
       spanning_instance_config,
     },
   },
-  models::{Monitor, MonitorIdentity, Workspace},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  models::{Container, Monitor, MonitorIdentity, Workspace},
+  traits::{
+    CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
+  },
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -157,6 +159,26 @@ pub fn assign_pages(
   compact_pages(&mut placements);
 
   placements
+}
+
+/// Whether the monitor is taller than wide.
+fn is_portrait(monitor: &Monitor) -> anyhow::Result<bool> {
+  let rect = monitor.to_rect()?;
+  Ok(rect.height() > rect.width())
+}
+
+/// Swaps horizontal and vertical tiling throughout a workspace, so that
+/// a layout made for one monitor orientation fits the other.
+pub fn transpose_layout(workspace: &Workspace) {
+  workspace.set_tiling_direction(workspace.tiling_direction().inverse());
+
+  for descendant in workspace.descendants() {
+    if let Container::Split(split_container) = descendant {
+      split_container.set_tiling_direction(
+        split_container.tiling_direction().inverse(),
+      );
+    }
+  }
 }
 
 /// Position of the workspace's current monitor within `monitors`.
@@ -364,6 +386,13 @@ fn apply_placement(
       None,
     )?;
 
+    // A layout made for a portrait monitor is a vertical stack; shown on
+    // a landscape monitor it would be squashed. Flipping is its own
+    // inverse, so moving back home restores the original layout.
+    if is_portrait(&current_monitor)? != is_portrait(&placement.monitor)? {
+      transpose_layout(workspace);
+    }
+
     let windows = workspace
       .descendants()
       .filter_map(|descendant| descendant.as_window_container().ok());
@@ -418,14 +447,17 @@ mod tests {
   use std::collections::HashMap;
 
   use uuid::Uuid;
+  use wm_common::TilingDirection;
   use wm_platform::Rect;
 
-  use super::assign_pages;
+  use super::{assign_pages, transpose_layout};
   use crate::{
     commands::container::attach_container,
-    models::{Monitor, MonitorIdentity, Workspace},
+    models::{
+      Monitor, MonitorIdentity, SplitContainer, TilingWindow, Workspace,
+    },
     test_utils::mock_monitor_layout,
-    traits::CommonGetters,
+    traits::{CommonGetters, TilingDirectionGetters},
   };
 
   /// Monitor bounds of a 4-monitor layout.
@@ -657,6 +689,39 @@ mod tests {
 
     assert_eq!(placements["b"], (0, 1, true));
     assert_eq!(placements["a"], (1, 1, false));
+  }
+
+  #[test]
+  fn transposing_flips_workspace_and_nested_splits() {
+    let inner_split = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Horizontal)
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        TilingWindow::mock().call().into(),
+      ])
+      .call();
+
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        inner_split.clone().into(),
+      ])
+      .call();
+
+    transpose_layout(&workspace);
+
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Horizontal);
+    assert_eq!(inner_split.tiling_direction(), TilingDirection::Vertical);
+
+    // Transposing twice restores the original layout.
+    transpose_layout(&workspace);
+
+    assert_eq!(workspace.tiling_direction(), TilingDirection::Vertical);
+    assert_eq!(
+      inner_split.tiling_direction(),
+      TilingDirection::Horizontal
+    );
   }
 
   #[test]
