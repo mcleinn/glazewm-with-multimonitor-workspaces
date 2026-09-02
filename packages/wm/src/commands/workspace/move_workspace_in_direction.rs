@@ -2,10 +2,12 @@ use anyhow::Context;
 use wm_common::WmEvent;
 use wm_platform::Direction;
 
-use super::{activate_workspace, deactivate_workspace, sort_workspaces};
+use super::{
+  activate_default_workspace, deactivate_workspace, sort_workspaces,
+};
 use crate::{
   commands::container::move_container_within_tree,
-  models::Workspace,
+  models::{MonitorIdentity, Workspace},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -48,6 +50,12 @@ pub fn move_workspace_in_direction(
       );
     }
 
+    // An explicitly moved instance of a spanning workspace now belongs
+    // to the target monitor.
+    if workspace.config().spanning_group.is_some() {
+      workspace.set_home(Some(MonitorIdentity::of(&target_monitor)));
+    }
+
     state
       .pending_sync
       .queue_cursor_jump()
@@ -57,7 +65,7 @@ pub fn move_workspace_in_direction(
     match origin_monitor.child_count() {
       0 => {
         // Prevent origin monitor from having no workspaces.
-        activate_workspace(None, Some(origin_monitor), state, config)?;
+        activate_default_workspace(&origin_monitor, state, config)?;
       }
       _ => {
         // Redraw the workspace on the origin monitor.

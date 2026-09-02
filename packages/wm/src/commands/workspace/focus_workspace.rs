@@ -6,7 +6,7 @@ use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
   },
-  models::WorkspaceTarget,
+  models::{Workspace, WorkspaceTarget},
   traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
@@ -29,16 +29,21 @@ pub fn focus_workspace(
     .and_then(|focused| focused.workspace())
     .context("No workspace is currently focused.")?;
 
-  // Spanning ("virtual desktop") workspaces switch all monitors at once.
-  let spanning_group = match &target {
-    WorkspaceTarget::Name(name) => Some(name.clone()),
-    WorkspaceTarget::Recent => state.recent_workspace_name.clone(),
+  // Pages of spanning ("virtual desktop") workspaces switch all monitors
+  // at once.
+  let page_key = match &target {
+    WorkspaceTarget::Name(name) => {
+      state.resolve_spanning_target(name, config)
+    }
+    WorkspaceTarget::Recent => state
+      .recent_workspace_name
+      .as_deref()
+      .and_then(|name| state.resolve_spanning_target(name, config)),
     _ => None,
-  }
-  .filter(|name| config.spanning_workspace_config(name).is_some());
+  };
 
-  if let Some(group_name) = spanning_group {
-    return focus_spanning_workspace(&group_name, state, config);
+  if let Some(page_key) = page_key {
+    return focus_spanning_workspace(&page_key, state, config);
   }
 
   let (target_workspace_name, target_workspace) =
@@ -58,49 +63,63 @@ pub fn focus_workspace(
   }?;
 
   if let Some(target_workspace) = target_workspace {
-    info!("Focusing workspace: {target_workspace}");
-
-    // Get the currently displayed workspace on the same monitor that the
-    // workspace to focus is on.
-    let displayed_workspace = target_workspace
-      .monitor()
-      .and_then(|monitor| monitor.displayed_workspace())
-      .context("No workspace is currently displayed.")?;
-
-    // Set focus to whichever window last had focus in workspace. If the
-    // workspace has no windows, then set focus to the workspace itself.
-    let container_to_focus = target_workspace
-      .descendant_focus_order()
-      .next()
-      .unwrap_or_else(|| target_workspace.clone().into());
-
-    set_focused_descendant(&container_to_focus, None);
-    state.pending_sync.queue_focus_change();
-
-    // Display the workspace to switch focus to.
-    state
-      .pending_sync
-      .queue_container_to_redraw(displayed_workspace)
-      .queue_container_to_redraw(target_workspace);
-
-    // Get empty workspace to destroy (if one is found). Cannot destroy
-    // empty workspaces if they're the only workspace on the monitor.
-    let workspace_to_destroy =
-      state.workspaces().into_iter().find(|workspace| {
-        !workspace.config().keep_alive
-          && !workspace.has_children()
-          && !workspace.is_displayed()
-      });
-
-    if let Some(workspace) = workspace_to_destroy {
-      deactivate_workspace(workspace, state)?;
-    }
+    focus_workspace_instance(&target_workspace, state)?;
 
     // Save the currently focused workspace as recent. For instances of
-    // spanning workspaces, the group name is saved instead so that
-    // recent-toggling returns to the whole group.
+    // spanning workspaces, the page label is saved instead so that
+    // recent-toggling returns to the whole page.
     state.recent_workspace_name = Some(focused_workspace.logical_name());
     state.pending_sync.queue_cursor_jump();
+  }
+
+  Ok(())
+}
+
+/// Focuses a single active workspace, displaying it on its monitor.
+///
+/// For instances of spanning workspaces, only this one instance is
+/// affected (other monitors keep their displayed workspace). Focusing the
+/// whole page is done via `focus_spanning_workspace`.
+pub fn focus_workspace_instance(
+  target_workspace: &Workspace,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  info!("Focusing workspace: {target_workspace}");
+
+  // Get the currently displayed workspace on the same monitor that the
+  // workspace to focus is on.
+  let displayed_workspace = target_workspace
+    .monitor()
+    .and_then(|monitor| monitor.displayed_workspace())
+    .context("No workspace is currently displayed.")?;
+
+  // Set focus to whichever window last had focus in workspace. If the
+  // workspace has no windows, then set focus to the workspace itself.
+  let container_to_focus = target_workspace
+    .descendant_focus_order()
+    .next()
+    .unwrap_or_else(|| target_workspace.clone().into());
+
+  set_focused_descendant(&container_to_focus, None);
+  state.pending_sync.queue_focus_change();
+
+  // Display the workspace to switch focus to.
+  state
+    .pending_sync
+    .queue_container_to_redraw(displayed_workspace)
+    .queue_container_to_redraw(target_workspace.clone());
+
+  // Get empty workspace to destroy (if one is found). Cannot destroy
+  // empty workspaces if they're the only workspace on the monitor.
+  let workspace_to_destroy =
+    state.workspaces().into_iter().find(|workspace| {
+      !workspace.config().keep_alive
+        && !workspace.has_children()
+        && !workspace.is_displayed()
+    });
+
+  if let Some(workspace) = workspace_to_destroy {
+    deactivate_workspace(workspace, state)?;
   }
 
   Ok(())

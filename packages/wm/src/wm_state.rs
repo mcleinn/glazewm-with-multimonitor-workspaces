@@ -4,7 +4,9 @@ use anyhow::Context;
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
+use wm_common::{
+  BindingModeConfig, HideCorner, PageKey, WindowState, WmEvent,
+};
 use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
@@ -348,6 +350,75 @@ impl WmState {
       .find(|workspace| workspace.config().name == workspace_name)
   }
 
+  /// Number of pages a spanning workspace group currently has (at least
+  /// one).
+  fn spanning_page_count(&self, group_name: &str) -> usize {
+    self
+      .workspaces()
+      .iter()
+      .filter(|workspace| {
+        workspace.config().spanning_group.as_deref() == Some(group_name)
+      })
+      .map(|workspace| workspace.config().spanning_page)
+      .max()
+      .unwrap_or(1)
+      .max(1)
+  }
+
+  /// Pages of all spanning workspace groups, in config order.
+  ///
+  /// With every monitor connected, this is exactly the list of spanning
+  /// groups. Groups with instances of disconnected monitors contribute
+  /// further pages right after their first one, which shifts the
+  /// positions of later groups. The list is never shorter than the number
+  /// of spanning groups.
+  pub fn spanning_pages(&self, config: &UserConfig) -> Vec<PageKey> {
+    config
+      .spanning_workspace_configs()
+      .flat_map(|group_config| {
+        let page_count = self.spanning_page_count(&group_config.name);
+
+        (1..=page_count).map(move |page| PageKey {
+          group: group_config.name.clone(),
+          page,
+        })
+      })
+      .collect()
+  }
+
+  /// Resolves a workspace name given to `focus`/`move` to a page of a
+  /// spanning workspace group.
+  ///
+  /// The name of a spanning group selects the page at the group's
+  /// position among all pages (so `focus --workspace 2` reaches the
+  /// second page of group `1` while one exists). A page label (e.g.
+  /// `1/2`) selects that page directly, falling back to the group's
+  /// first page if it doesn't exist.
+  ///
+  /// Returns `None` for names of regular workspaces.
+  pub fn resolve_spanning_target(
+    &self,
+    workspace_name: &str,
+    config: &UserConfig,
+  ) -> Option<PageKey> {
+    if let Some(position) = config.spanning_config_position(workspace_name)
+    {
+      return self.spanning_pages(config).into_iter().nth(position);
+    }
+
+    let page_key = PageKey::parse(workspace_name, |group| {
+      config.spanning_workspace_config(group).is_some()
+    })?;
+
+    Some(
+      if page_key.page <= self.spanning_page_count(&page_key.group) {
+        page_key
+      } else {
+        PageKey::first(&page_key.group)
+      },
+    )
+  }
+
   /// Gets a workspace and its name by the given target.
   ///
   /// Returns a tuple of the workspace name and the `Workspace` instance
@@ -466,7 +537,7 @@ impl WmState {
       }
       WorkspaceTarget::Next => {
         let workspaces = &config.value.workspaces;
-        let origin_name = origin_workspace.config().name.clone();
+        let origin_name = origin_workspace.config_name_in_user_config();
         let origin_index = workspaces
           .iter()
           .position(|workspace| workspace.name == origin_name)
@@ -487,7 +558,7 @@ impl WmState {
       }
       WorkspaceTarget::Previous => {
         let workspaces = &config.value.workspaces;
-        let origin_name = origin_workspace.config().name.clone();
+        let origin_name = origin_workspace.config_name_in_user_config();
         let origin_index = workspaces
           .iter()
           .position(|workspace| workspace.name == origin_name)

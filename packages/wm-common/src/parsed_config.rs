@@ -4,7 +4,7 @@ use wm_platform::{
   RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, page_key::PageKey};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -427,6 +427,27 @@ pub struct WorkspaceConfig {
   /// emitted over IPC.
   #[serde(skip)]
   pub spanning_group: Option<String>,
+
+  /// 1-based page of the spanning group this runtime workspace instance
+  /// belongs to. Page 1 is the group itself; higher pages hold the
+  /// instances of monitors that are currently disconnected.
+  ///
+  /// Internal field (`0` for non-spanning workspaces): never read from
+  /// the user's config file and never emitted over IPC.
+  #[serde(skip)]
+  pub spanning_page: usize,
+}
+
+impl WorkspaceConfig {
+  /// Key of the spanning page this runtime workspace instance belongs to,
+  /// if it's an instance of a spanning workspace.
+  #[must_use]
+  pub fn page_key(&self) -> Option<PageKey> {
+    self.spanning_group.as_ref().map(|group| PageKey {
+      group: group.clone(),
+      page: self.spanning_page.max(1),
+    })
+  }
 }
 
 /// Helper function for setting a default value for a boolean field.
@@ -527,6 +548,7 @@ mod tests {
 
     assert_eq!(config.monitors, Some(MonitorSelector::All));
     assert_eq!(config.spanning_group, None);
+    assert_eq!(config.spanning_page, 0);
   }
 
   #[test]
@@ -536,6 +558,7 @@ mod tests {
 
     assert_eq!(config.monitors, None);
     assert_eq!(config.spanning_group, None);
+    assert_eq!(config.spanning_page, 0);
   }
 
   #[test]
@@ -549,6 +572,7 @@ mod tests {
 
     assert!(serialized.contains("monitors: all"));
     assert!(!serialized.contains("spanning_group"));
+    assert!(!serialized.contains("spanning_page"));
     assert!(!serialized.contains("spanningGroup"));
   }
 }

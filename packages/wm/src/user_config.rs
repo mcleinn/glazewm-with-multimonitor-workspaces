@@ -102,6 +102,13 @@ impl UserConfig {
             workspace_config.name
           );
         }
+
+        if workspace_config.name.contains('/') {
+          tracing::warn!(
+            "Workspace '{}' contains '/', which is reserved for pages of spanning workspaces (e.g. '1/2').",
+            workspace_config.name
+          );
+        }
       }
     }
   }
@@ -313,6 +320,10 @@ impl UserConfig {
     pending_window_rules
   }
 
+  /// Workspace configs without an active workspace.
+  ///
+  /// A spanning workspace config counts as active as soon as any instance
+  /// of its group exists, regardless of the instance's name.
   pub fn inactive_workspace_configs(
     &self,
     active_workspaces: &[Workspace],
@@ -322,9 +333,14 @@ impl UserConfig {
       .workspaces
       .iter()
       .filter(|config| {
-        !active_workspaces
-          .iter()
-          .any(|workspace| workspace.config().name == config.name)
+        !active_workspaces.iter().any(|workspace| {
+          let workspace_config = workspace.config();
+
+          workspace_config.name == config.name
+            || (config.monitors.is_some()
+              && workspace_config.spanning_group.as_deref()
+                == Some(config.name.as_str()))
+        })
       })
       .collect()
   }
@@ -373,6 +389,28 @@ impl UserConfig {
     })
   }
 
+  /// Configs of all spanning workspace groups, in config order.
+  pub fn spanning_workspace_configs(
+    &self,
+  ) -> impl Iterator<Item = &WorkspaceConfig> {
+    self
+      .value
+      .workspaces
+      .iter()
+      .filter(|config| config.monitors.is_some())
+  }
+
+  /// Position of a spanning workspace group among all spanning groups in
+  /// the config (i.e. the index of the key it's bound to).
+  pub fn spanning_config_position(
+    &self,
+    workspace_name: &str,
+  ) -> Option<usize> {
+    self
+      .spanning_workspace_configs()
+      .position(|config| config.name == workspace_name)
+  }
+
   pub fn workspace_config_index(
     &self,
     workspace_name: &str,
@@ -384,18 +422,18 @@ impl UserConfig {
       .position(|config| config.name == workspace_name)
   }
 
+  /// Sorts workspaces by their config position. Instances of spanning
+  /// workspaces sort by their group's config position, then by page.
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
     workspaces.sort_by_key(|workspace| {
       let config = workspace.config();
 
-      // Synthesized instances of spanning workspaces aren't present in
-      // the user's config; sort them by their group's config position.
-      self.workspace_config_index(&config.name).or_else(|| {
-        config
-          .spanning_group
-          .as_deref()
-          .and_then(|group| self.workspace_config_index(group))
-      })
+      match config.page_key() {
+        Some(page_key) => {
+          (self.workspace_config_index(&page_key.group), page_key.page)
+        }
+        None => (self.workspace_config_index(&config.name), 0),
+      }
     });
   }
 
@@ -461,7 +499,17 @@ mod tests {
       keep_alive: false,
       monitors,
       spanning_group: None,
+      spanning_page: 0,
     }
+  }
+
+  fn mock_instance(name: &str, group: &str, page: usize) -> Workspace {
+    let instance = Workspace::mock().name(name.to_string()).call();
+    let mut instance_config = instance.config();
+    instance_config.spanning_group = Some(group.to_string());
+    instance_config.spanning_page = page;
+    instance.set_config(instance_config);
+    instance
   }
 
   #[test]
@@ -477,6 +525,36 @@ mod tests {
   }
 
   #[test]
+  fn positions_spanning_configs_among_themselves() {
+    let config = mock_user_config(vec![
+      mock_workspace_config("9", None),
+      mock_workspace_config("1", Some(MonitorSelector::All)),
+      mock_workspace_config("2", Some(MonitorSelector::All)),
+    ]);
+
+    assert_eq!(config.spanning_config_position("1"), Some(0));
+    assert_eq!(config.spanning_config_position("2"), Some(1));
+    assert_eq!(config.spanning_config_position("9"), None);
+  }
+
+  #[test]
+  fn spanning_config_is_active_with_any_instance() {
+    let config = mock_user_config(vec![
+      mock_workspace_config("1", Some(MonitorSelector::All)),
+      mock_workspace_config("2", None),
+    ]);
+
+    let active = vec![mock_instance("1#abc123", "1", 1)];
+    let inactive_names = config
+      .inactive_workspace_configs(&active)
+      .iter()
+      .map(|config| config.name.clone())
+      .collect::<Vec<_>>();
+
+    assert_eq!(inactive_names, vec!["2"]);
+  }
+
+  #[test]
   fn sorts_synthesized_instances_by_group_position() {
     let config = mock_user_config(vec![
       mock_workspace_config("1", None),
@@ -484,14 +562,10 @@ mod tests {
       mock_workspace_config("3", None),
     ]);
 
-    let instance = Workspace::mock().name("2#abc123".to_string()).call();
-    let mut instance_config = instance.config();
-    instance_config.spanning_group = Some("2".to_string());
-    instance.set_config(instance_config);
-
     let mut workspaces = vec![
       Workspace::mock().name("3".to_string()).call(),
-      instance,
+      mock_instance("2/2", "2", 2),
+      mock_instance("2#abc123", "2", 1),
       Workspace::mock().name("1".to_string()).call(),
     ];
 
@@ -502,6 +576,6 @@ mod tests {
       .map(|workspace| workspace.config().name)
       .collect::<Vec<_>>();
 
-    assert_eq!(names, vec!["1", "2#abc123", "3"]);
+    assert_eq!(names, vec!["1", "2#abc123", "2/2", "3"]);
   }
 }

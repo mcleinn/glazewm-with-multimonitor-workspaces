@@ -5,8 +5,9 @@ use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
-    container::set_focused_descendant, window::run_window_rules,
-    workspace::focus_workspace,
+    container::set_focused_descendant,
+    window::run_window_rules,
+    workspace::{focus_workspace, focus_workspace_instance},
   },
   models::WorkspaceTarget,
   traits::{CommonGetters, WindowGetters},
@@ -74,11 +75,17 @@ pub fn handle_window_focused(
     if window.display_state() == DisplayState::Hidden {
       info!("Focusing off-screen window: {window}");
 
-      focus_workspace(
-        WorkspaceTarget::Name(workspace.config().name),
-        state,
-        config,
-      )?;
+      if workspace.config().spanning_group.is_some() {
+        // Display exactly the instance holding the window; resolving
+        // its name would select a page instead.
+        focus_workspace_instance(&workspace, state)?;
+      } else {
+        focus_workspace(
+          WorkspaceTarget::Name(workspace.config().name),
+          state,
+          config,
+        )?;
+      }
     }
 
     // Update the WM's focus state.

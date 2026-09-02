@@ -2,29 +2,30 @@ use std::collections::VecDeque;
 
 use anyhow::Context;
 use tracing::info;
-use wm_common::WmEvent;
+use wm_common::{PageKey, WmEvent};
 
 use super::{
   activate_spanning_instance, deactivate_workspace, focus_workspace,
-  merge_spanning_instances,
 };
 use crate::{
-  commands::container::set_focused_descendant,
+  commands::{
+    container::set_focused_descendant, monitor::repage_spanning_desktops,
+  },
   models::{Monitor, Workspace, WorkspaceTarget},
   traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
 };
 
-/// Focuses a spanning ("virtual desktop") workspace group, switching the
-/// displayed workspace on every monitor at once.
+/// Focuses a page of a spanning ("virtual desktop") workspace group,
+/// switching the displayed workspace on every monitor at once.
 ///
-/// Monitors without an instance of the group get one synthesized on
+/// Monitors without an instance of the page get one synthesized on
 /// demand. The monitor that currently has focus keeps focus. All changes
 /// accumulate into a single pending sync, so the switch is applied in one
 /// platform pass.
 pub fn focus_spanning_workspace(
-  group_name: &str,
+  page_key: &PageKey,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
@@ -34,12 +35,13 @@ pub fn focus_spanning_workspace(
     .context("No workspace is currently focused.")?;
 
   let origin_name = focused_workspace.logical_name();
+  let target_name = page_key.to_string();
 
-  if origin_name == group_name
+  if origin_name == target_name
     && config.value.general.toggle_workspace_on_refocus
   {
     if let Some(recent_name) = state.recent_workspace_name.clone() {
-      if recent_name != group_name {
+      if recent_name != target_name {
         return focus_workspace(
           WorkspaceTarget::Name(recent_name),
           state,
@@ -49,15 +51,48 @@ pub fn focus_spanning_workspace(
     }
   }
 
-  // When already on the group, the loop below still runs to re-sync
-  // monitors that drifted (e.g. after focusing a single instance or a
-  // monitor topology change). All operations are no-ops when consistent.
+  info!("Focusing spanning workspace page: {page_key}");
 
-  let focused_monitor = focused_workspace
-    .monitor()
-    .context("Focused workspace has no monitor.")?;
+  // Let instances of disconnected monitors take any free slot of the
+  // page first, so that no empty instance gets synthesized in their
+  // place.
+  repage_spanning_desktops(state, config)?;
 
-  info!("Focusing spanning workspace: {group_name}");
+  // When already on the page, this still re-syncs monitors that drifted
+  // (e.g. after focusing a single instance). All operations are no-ops
+  // when consistent.
+  let has_display_changes =
+    sync_monitors_to_page(page_key, state, config)?;
+
+  if has_display_changes {
+    if origin_name != target_name {
+      state.recent_workspace_name = Some(origin_name);
+    }
+
+    state.pending_sync.queue_cursor_jump();
+  }
+
+  Ok(())
+}
+
+/// Displays a page of a spanning workspace group on every monitor,
+/// synthesizing missing instances, and focuses its instance on the
+/// focused monitor.
+///
+/// Unlike `focus_spanning_workspace`, this has no toggle-on-refocus,
+/// recent-workspace or cursor side effects, so it's safe to call while
+/// handling monitor layout changes.
+///
+/// Returns `true` if the displayed workspace changed on any monitor.
+pub fn sync_monitors_to_page(
+  page_key: &PageKey,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  let focused_monitor = state
+    .focused_container()
+    .and_then(|focused| focused.monitor())
+    .context("No monitor is currently focused.")?;
 
   // Monitors in order of most to least recently focused.
   let monitors_by_recency = state
@@ -76,9 +111,9 @@ pub fn focus_spanning_workspace(
   // focus order. The focused monitor is processed last and re-focused
   // explicitly.
   for monitor in monitors_by_recency.iter().rev() {
-    has_display_changes |= sync_monitor_to_group(
+    has_display_changes |= sync_monitor_to_page(
       monitor,
-      group_name,
+      page_key,
       &focused_monitor,
       state,
       config,
@@ -86,7 +121,7 @@ pub fn focus_spanning_workspace(
   }
 
   if has_display_changes {
-    // Destroy all empty hidden workspaces. A group switch can hide up to
+    // Destroy all empty hidden workspaces. A page switch can hide up to
     // one emptied workspace per monitor, so this intentionally destroys
     // more than the single workspace that a regular focus switch does.
     let workspaces_to_destroy = state
@@ -103,26 +138,23 @@ pub fn focus_spanning_workspace(
       deactivate_workspace(workspace, state)?;
     }
 
-    if origin_name != group_name {
-      state.recent_workspace_name = Some(origin_name);
-    }
-
-    state.pending_sync.queue_cursor_jump();
+    // Close the gaps in page numbering left by destroyed instances.
+    repage_spanning_desktops(state, config)?;
   }
 
-  Ok(())
+  Ok(has_display_changes)
 }
 
-/// Displays the group's workspace instance on a single monitor,
+/// Displays the page's workspace instance on a single monitor,
 /// synthesizing the instance if the monitor doesn't have one yet.
 ///
 /// Only the focused monitor receives global focus; other monitors have
 /// their displayed workspace changed in place.
 ///
 /// Returns `true` if the monitor's displayed workspace changed.
-fn sync_monitor_to_group(
+fn sync_monitor_to_page(
   monitor: &Monitor,
-  group_name: &str,
+  page_key: &PageKey,
   focused_monitor: &Monitor,
   state: &mut WmState,
   config: &UserConfig,
@@ -131,31 +163,16 @@ fn sync_monitor_to_group(
     .displayed_workspace()
     .context("No workspace is currently displayed.")?;
 
-  let mut instances = spanning_instances_on_monitor(monitor, group_name);
-
-  let (instance, mut has_changes) = match instances.pop_front() {
-    Some(instance) => (instance, false),
-    None => (
-      activate_spanning_instance(group_name, monitor, state, config)?,
-      true,
-    ),
+  let instance = match spanning_instance_on_monitor(monitor, page_key) {
+    Some(instance) => instance,
+    None => activate_spanning_instance(page_key, monitor, state, config)?,
   };
-
-  // Safety net: absorb any duplicate instances (e.g. left over from a
-  // monitor removal) so that no window sits in a hidden duplicate.
-  for duplicate in instances {
-    merge_spanning_instances(&duplicate, &instance, state)?;
-    state
-      .pending_sync
-      .queue_containers_to_redraw(instance.tiling_children());
-    has_changes = true;
-  }
 
   let is_focused_monitor = monitor.id() == focused_monitor.id();
   let is_already_displayed = displayed_workspace.id() == instance.id();
 
   if is_already_displayed && !is_focused_monitor {
-    return Ok(has_changes);
+    return Ok(false);
   }
 
   // Focus the last-focused container within the instance, falling back
@@ -178,7 +195,7 @@ fn sync_monitor_to_group(
   }
 
   if is_already_displayed {
-    return Ok(has_changes);
+    return Ok(false);
   }
 
   state
@@ -198,33 +215,36 @@ fn sync_monitor_to_group(
   Ok(true)
 }
 
-/// The workspace instance of a spanning group on the given monitor,
-/// preferring the most recently focused one (duplicates are possible
-/// after a monitor removal).
+/// The workspace instance of a spanning page on the given monitor,
+/// preferring the most recently focused one should there be several.
 pub fn spanning_instance_on_monitor(
   monitor: &Monitor,
-  group_name: &str,
+  page_key: &PageKey,
 ) -> Option<Workspace> {
-  spanning_instances_on_monitor(monitor, group_name).pop_front()
+  spanning_instances_on_monitor(monitor, page_key).pop_front()
 }
 
-/// All workspace instances of a spanning group on the given monitor,
+/// All workspace instances of a spanning page on the given monitor,
 /// ordered from most to least recently focused.
 pub fn spanning_instances_on_monitor(
   monitor: &Monitor,
-  group_name: &str,
+  page_key: &PageKey,
 ) -> VecDeque<Workspace> {
   monitor
     .borrow_child_focus_order()
     .iter()
     .filter_map(|workspace_id| monitor.child_by_id(workspace_id))
     .filter_map(|container| container.as_workspace().cloned())
-    .filter(|workspace| workspace.logical_name() == group_name)
+    .filter(|workspace| {
+      workspace.config().page_key().as_ref() == Some(page_key)
+    })
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
+  use wm_common::PageKey;
+
   use super::{
     spanning_instance_on_monitor, spanning_instances_on_monitor,
   };
@@ -233,43 +253,65 @@ mod tests {
     models::{Monitor, Workspace},
   };
 
-  /// Mocks a spanning workspace instance with the given name and group.
-  fn mock_instance(name: &str, group_name: &str) -> Workspace {
+  /// Mocks a spanning workspace instance with the given name and page.
+  fn mock_instance(
+    name: &str,
+    group_name: &str,
+    page: usize,
+  ) -> Workspace {
     let workspace = Workspace::mock().name(name.to_string()).call();
 
     let mut config = workspace.config();
     config.spanning_group = Some(group_name.to_string());
+    config.spanning_page = page;
     workspace.set_config(config);
 
     workspace
   }
 
+  fn page(group: &str, page: usize) -> PageKey {
+    PageKey {
+      group: group.to_string(),
+      page,
+    }
+  }
+
   #[test]
-  fn finds_instance_by_group_name() {
+  fn finds_instance_by_page() {
     let monitor = Monitor::mock()
       .workspaces(vec![
         Workspace::mock().name("1".to_string()).call(),
-        mock_instance("2#abc123", "2"),
+        mock_instance("2#abc123", "2", 1),
+        mock_instance("2/2", "2", 2),
       ])
       .call();
 
-    let instance = spanning_instance_on_monitor(&monitor, "2")
+    let instance = spanning_instance_on_monitor(&monitor, &page("2", 1))
       .expect("Instance should be found.");
-
     assert_eq!(instance.config().name, "2#abc123");
-    assert!(spanning_instance_on_monitor(&monitor, "3").is_none());
+
+    let instance = spanning_instance_on_monitor(&monitor, &page("2", 2))
+      .expect("Instance should be found.");
+    assert_eq!(instance.config().name, "2/2");
+
+    assert!(
+      spanning_instance_on_monitor(&monitor, &page("2", 3)).is_none()
+    );
+    assert!(
+      spanning_instance_on_monitor(&monitor, &page("3", 1)).is_none()
+    );
   }
 
   #[test]
   fn prefers_most_recently_focused_duplicate() {
-    let duplicate = mock_instance("2#dup", "2");
+    let duplicate = mock_instance("2#dup", "2", 1);
 
     let monitor = Monitor::mock()
-      .workspaces(vec![mock_instance("2", "2"), duplicate.clone()])
+      .workspaces(vec![mock_instance("2", "2", 1), duplicate.clone()])
       .call();
 
     // The first attached workspace is at the front of the focus order.
-    let instance = spanning_instance_on_monitor(&monitor, "2")
+    let instance = spanning_instance_on_monitor(&monitor, &page("2", 1))
       .expect("Instance should be found.");
     assert_eq!(instance.config().name, "2");
 
@@ -279,18 +321,18 @@ mod tests {
       Some(&monitor.clone().into()),
     );
 
-    let instance = spanning_instance_on_monitor(&monitor, "2")
+    let instance = spanning_instance_on_monitor(&monitor, &page("2", 1))
       .expect("Instance should be found.");
     assert_eq!(instance.config().name, "2#dup");
   }
 
   #[test]
   fn lists_all_duplicates_by_recency() {
-    let duplicate = mock_instance("2#dup", "2");
+    let duplicate = mock_instance("2#dup", "2", 1);
 
     let monitor = Monitor::mock()
       .workspaces(vec![
-        mock_instance("2", "2"),
+        mock_instance("2", "2", 1),
         Workspace::mock().name("1".to_string()).call(),
         duplicate.clone(),
       ])
@@ -301,18 +343,20 @@ mod tests {
       Some(&monitor.clone().into()),
     );
 
-    let names = spanning_instances_on_monitor(&monitor, "2")
+    let names = spanning_instances_on_monitor(&monitor, &page("2", 1))
       .iter()
       .map(|workspace| workspace.config().name)
       .collect::<Vec<_>>();
 
     assert_eq!(names, vec!["2#dup".to_string(), "2".to_string()]);
-    assert!(spanning_instances_on_monitor(&monitor, "3").is_empty());
+    assert!(
+      spanning_instances_on_monitor(&monitor, &page("3", 1)).is_empty()
+    );
   }
 
   #[test]
   fn bounded_focus_changes_displayed_workspace() {
-    let target = mock_instance("2", "2");
+    let target = mock_instance("2", "2", 1);
 
     let monitor = Monitor::mock()
       .workspaces(vec![

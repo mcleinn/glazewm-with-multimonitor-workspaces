@@ -2,7 +2,7 @@ use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
 use wm_common::{HideMethod, ParsedConfig};
-use wm_common::{WindowRuleEvent, WmEvent};
+use wm_common::{PageKey, WindowRuleEvent, WmEvent};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
@@ -112,31 +112,34 @@ fn update_workspace_configs(
       .iter()
       .find(|config| config.name == current_config.name)
       .map(|found_config| {
-        let mut updated_config = found_config.clone();
-
-        if updated_config.monitors.is_some() {
+        if found_config.monitors.is_some() {
           // Instances of spanning workspaces are keyed by their group
-          // name, and ignore `bind_to_monitor`.
-          updated_config.spanning_group =
-            Some(updated_config.name.clone());
-          updated_config.bind_to_monitor = None;
-        }
+          // name, keep their page, and ignore `bind_to_monitor`.
+          let page_key = current_config
+            .page_key()
+            .unwrap_or_else(|| PageKey::first(&found_config.name));
 
-        updated_config
+          spanning_instance_config(
+            found_config,
+            &page_key,
+            current_config.name.clone(),
+          )
+        } else {
+          found_config.clone()
+        }
       })
       .or_else(|| {
         // Synthesized instances of spanning workspaces aren't present in
         // the user's config; re-derive their config from the group's.
-        current_config
-          .spanning_group
-          .as_ref()
-          .and_then(|group| config.spanning_workspace_config(group))
-          .map(|group_config| {
-            spanning_instance_config(
-              group_config,
-              current_config.name.clone(),
-            )
-          })
+        let page_key = current_config.page_key()?;
+        let group_config =
+          config.spanning_workspace_config(&page_key.group)?;
+
+        Some(spanning_instance_config(
+          group_config,
+          &page_key,
+          current_config.name.clone(),
+        ))
       })
       .or_else(|| {
         // When the workspace config is not found, the current name of the

@@ -15,7 +15,8 @@ use crate::{
   impl_common_getters, impl_container_debug,
   impl_tiling_direction_getters,
   models::{
-    Container, DirectionContainer, TilingContainer, WindowContainer,
+    Container, DirectionContainer, MonitorIdentity, TilingContainer,
+    WindowContainer,
   },
   traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
 };
@@ -32,6 +33,7 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  home: Option<MonitorIdentity>,
 }
 
 impl Workspace {
@@ -48,6 +50,7 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      home: None,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -65,11 +68,36 @@ impl Workspace {
 
   /// Logical (user-facing) name of the workspace.
   ///
-  /// For instances of a spanning workspace, this is the group name from
-  /// the user's config; otherwise it's the config name.
+  /// For instances of a spanning workspace, this is the label of the page
+  /// they belong to (e.g. `1` or `1/2`); otherwise it's the config name.
   pub fn logical_name(&self) -> String {
     let config = self.config();
+
+    config
+      .page_key()
+      .map_or(config.name, |page_key| page_key.to_string())
+  }
+
+  /// Name of the workspace config in the user's config that this
+  /// workspace derives from: the group name for instances of spanning
+  /// workspaces, otherwise the config name.
+  pub fn config_name_in_user_config(&self) -> String {
+    let config = self.config();
     config.spanning_group.unwrap_or(config.name)
+  }
+
+  /// Identity of the monitor an instance of a spanning workspace belongs
+  /// to. Only set for instances of spanning workspaces.
+  ///
+  /// The instance is moved back to this monitor when it reconnects after
+  /// a monitor layout change.
+  pub fn home(&self) -> Option<MonitorIdentity> {
+    self.0.borrow().home.clone()
+  }
+
+  /// Sets the identity of the monitor the workspace belongs to.
+  pub fn set_home(&self, home: Option<MonitorIdentity>) {
+    self.0.borrow_mut().home = home;
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.

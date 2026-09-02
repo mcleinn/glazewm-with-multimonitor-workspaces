@@ -14,8 +14,8 @@ use crate::{
   commands::container::attach_container,
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
-    NonTilingWindow, SplitContainer, TilingContainer, TilingWindow,
-    Workspace,
+    NonTilingWindow, RootContainer, SplitContainer, TilingContainer,
+    TilingWindow, Workspace,
   },
   traits::TilingSizeGetters,
 };
@@ -47,6 +47,31 @@ pub fn mock_window_rect() -> Rect {
 
 pub fn mock_border_delta() -> RectDelta {
   RectDelta::zero()
+}
+
+/// Mocks a root container with one monitor per given bounds, attached in
+/// the given order (which should be left-to-right, as `sort_monitors`
+/// would produce).
+///
+/// Returns the monitors; the root container stays alive as their parent.
+pub fn mock_monitor_layout(bounds: &[Rect]) -> Vec<Monitor> {
+  let root = RootContainer::new();
+
+  bounds
+    .iter()
+    .map(|bounds| {
+      let monitor = Monitor::mock().bounds(bounds.clone()).call();
+
+      attach_container(
+        &monitor.clone().into(),
+        &root.clone().into(),
+        None,
+      )
+      .expect("Failed to attach monitor.");
+
+      monitor
+    })
+    .collect()
 }
 
 #[bon]
@@ -89,6 +114,7 @@ impl NativeMonitorProperties {
     #[builder(default = mock_working_area())] working_area: Rect,
     #[builder(default = MOCK_DPI)] dpi: u32,
     #[builder(default = MOCK_SCALE_FACTOR)] scale_factor: f32,
+    #[cfg(target_os = "windows")] device_path: Option<String>,
   ) -> Self {
     Self {
       device_name,
@@ -103,7 +129,7 @@ impl NativeMonitorProperties {
       #[cfg(target_os = "windows")]
       hardware_id: None,
       #[cfg(target_os = "windows")]
-      device_path: None,
+      device_path,
     }
   }
 }
@@ -243,6 +269,7 @@ impl Workspace {
       keep_alive: false,
       monitors: None,
       spanning_group: None,
+      spanning_page: 0,
     };
 
     let workspace = Self::new(config, gaps_config, tiling_direction);

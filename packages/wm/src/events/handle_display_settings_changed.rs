@@ -2,9 +2,13 @@ use anyhow::Context;
 use wm_common::try_warn;
 
 use crate::{
-  commands::monitor::{
-    add_monitor, move_bounded_workspaces_to_new_monitor, remove_monitor,
-    sort_monitors, update_monitor,
+  commands::{
+    container::set_focused_descendant,
+    monitor::{
+      add_monitor, move_bounded_workspaces_to_new_monitor, remove_monitor,
+      repage_spanning_desktops, sort_monitors, update_monitor,
+    },
+    workspace::sync_monitors_to_page,
   },
   models::{Monitor, NativeMonitorProperties},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -77,8 +81,44 @@ pub fn handle_display_settings_changed(
   // Sort monitors by position.
   sort_monitors(&state.root_container)?;
 
+  let focused_container = state.focused_container();
+
+  // Move instances of spanning workspaces back to their reconnected home
+  // monitors, and page the instances of disconnected monitors.
+  repage_spanning_desktops(state, config)?;
+
   for new_monitor in new_monitors {
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
+  }
+
+  // Keep focus on the previously focused container, whose workspace may
+  // have moved to another monitor.
+  let is_still_attached = focused_container
+    .as_ref()
+    .and_then(CommonGetters::monitor)
+    .and_then(|monitor| monitor.parent())
+    .is_some();
+
+  if let Some(focused_container) =
+    focused_container.filter(|_| is_still_attached)
+  {
+    set_focused_descendant(&focused_container, None);
+    state.pending_sync.queue_focus_change();
+  }
+
+  // Show the focused spanning page on every monitor, so that new
+  // monitors join it and monitors that took over instances display the
+  // right one.
+  let focused_page = state
+    .focused_container()
+    .and_then(|focused| focused.workspace())
+    .and_then(|workspace| workspace.config().page_key())
+    .filter(|page_key| {
+      config.spanning_workspace_config(&page_key.group).is_some()
+    });
+
+  if let Some(page_key) = focused_page {
+    sync_monitors_to_page(&page_key, state, config)?;
   }
 
   for window in state.windows() {

@@ -144,9 +144,9 @@ pub fn move_window_to_workspace(
 
 /// Resolves the workspace to move a window to, activating it if needed.
 ///
-/// Moving to a spanning ("virtual desktop") workspace targets the group's
-/// instance on the window's current monitor, so that the window stays on
-/// the same physical monitor.
+/// Moving to a page of a spanning ("virtual desktop") workspace targets
+/// the page's instance on the window's current monitor, so that the
+/// window stays on the same physical monitor.
 fn resolve_target_workspace(
   current_workspace: &Workspace,
   current_monitor: &Monitor,
@@ -155,14 +155,18 @@ fn resolve_target_workspace(
   config: &UserConfig,
 ) -> anyhow::Result<Option<Workspace>> {
   if let WorkspaceTarget::Name(name) = &target {
-    if config.spanning_workspace_config(name).is_some() {
-      let instance = spanning_instance_on_monitor(current_monitor, name);
+    if let Some(page_key) = state.resolve_spanning_target(name, config) {
+      let instance =
+        spanning_instance_on_monitor(current_monitor, &page_key);
 
       return Ok(Some(match instance {
         Some(instance) => instance,
-        None => {
-          activate_spanning_instance(name, current_monitor, state, config)?
-        }
+        None => activate_spanning_instance(
+          &page_key,
+          current_monitor,
+          state,
+          config,
+        )?,
       }));
     }
   }

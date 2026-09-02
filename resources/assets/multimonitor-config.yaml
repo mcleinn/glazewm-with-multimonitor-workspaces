@@ -129,7 +129,10 @@ window_behavior:
 
 workspaces:
   # Spanning ("virtual desktop") workspaces: alt+1..8 switches every
-  # monitor at once, like Windows 11 virtual desktops.
+  # monitor at once, like Windows 11 virtual desktops. When monitors are
+  # disconnected, their screens stay grouped as extra pages of their
+  # desktop (labelled e.g. '1/2') and shift the numbering of later
+  # desktops until the monitors return.
   - name: '1'
     monitors: 'all'
   - name: '2'

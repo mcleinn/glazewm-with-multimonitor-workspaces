@@ -7,7 +7,7 @@ use crate::{
   commands::{
     container::{attach_container, move_container_within_tree},
     workspace::{
-      activate_spanning_instance, activate_workspace, sort_workspaces,
+      activate_default_workspace, activate_workspace, sort_workspaces,
     },
   },
   models::{Monitor, NativeMonitorProperties, Workspace},
@@ -82,29 +82,12 @@ pub fn move_bounded_workspaces_to_new_monitor(
     }
   }
 
-  // Make sure the monitor has at least one workspace. If the focused
-  // monitor is displaying a spanning workspace, have this monitor join
-  // it; otherwise, prioritize bound workspace configs and fall back to
-  // the first available one if needed.
+  // Make sure the monitor has at least one workspace. If a spanning
+  // workspace page is focused, have this monitor join it; otherwise,
+  // prioritize bound workspace configs and fall back to the first
+  // available one if needed.
   if monitor.child_count() == 0 {
-    let focused_group = state
-      .focused_container()
-      .and_then(|focused| focused.monitor())
-      .and_then(|monitor| monitor.displayed_workspace())
-      .and_then(|workspace| workspace.config().spanning_group);
-
-    match focused_group
-      .filter(|group| config.spanning_workspace_config(group).is_some())
-    {
-      Some(group) => {
-        // The instance is the monitor's only workspace, so it's
-        // automatically displayed.
-        activate_spanning_instance(&group, monitor, state, config)?;
-      }
-      None => {
-        activate_workspace(None, Some(monitor.clone()), state, config)?;
-      }
-    }
+    activate_default_workspace(monitor, state, config)?;
   }
 
   Ok(())
@@ -154,7 +137,7 @@ pub fn move_workspace_to_monitor(
   match origin_monitor.child_count() {
     0 => {
       // Prevent origin monitor from having no workspaces.
-      activate_workspace(None, Some(origin_monitor), state, config)?;
+      activate_default_workspace(&origin_monitor, state, config)?;
     }
     _ => {
       // Redraw the workspace on the origin monitor.

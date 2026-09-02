@@ -40,6 +40,7 @@ pub fn update_workspace_config(
     keep_alive: new_config.keep_alive.unwrap_or(current_config.keep_alive),
     monitors: current_config.monitors,
     spanning_group: current_config.spanning_group.clone(),
+    spanning_page: current_config.spanning_page,
   };
 
   workspace.set_config(updated_config);
