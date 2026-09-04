@@ -5,7 +5,7 @@ use wm_common::{PageKey, TilingDirection, WmEvent, WorkspaceConfig};
 use super::sort_workspaces;
 use crate::{
   commands::container::attach_container,
-  models::{Monitor, MonitorIdentity, Workspace},
+  models::{Monitor, MonitorIdentity, Orientation, Workspace},
   traits::{CommonGetters, PositionGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -60,11 +60,8 @@ pub fn activate_workspace(
     })
     .context("Failed to get a target monitor for the workspace.")?;
 
-  let workspace = Workspace::new(
-    workspace_config.clone(),
-    config.value.gaps.clone(),
-    tiling_direction_for(&target_monitor)?,
-  );
+  let workspace =
+    new_workspace_for(workspace_config.clone(), &target_monitor, config)?;
 
   // Attach the created workspace to the specified monitor.
   attach_container(
@@ -93,8 +90,9 @@ pub fn activate_workspace(
 ///
 /// Unlike `activate_workspace`, this doesn't require the group name to be
 /// inactive: each monitor gets its own instance with a globally unique
-/// name derived from the page label. The monitor becomes the instance's
-/// home.
+/// name derived from the page label. The monitor becomes the home of a
+/// first-page instance; instances of further pages have no home (see
+/// `Workspace::home`).
 ///
 /// Returns the newly created `Workspace`.
 pub fn activate_spanning_instance(
@@ -118,11 +116,8 @@ pub fn activate_spanning_instance(
   let workspace_config =
     spanning_instance_config(group_config, page_key, instance_name);
 
-  let workspace = Workspace::new(
-    workspace_config,
-    config.value.gaps.clone(),
-    tiling_direction_for(target_monitor)?,
-  );
+  let workspace =
+    new_workspace_for(workspace_config, target_monitor, config)?;
 
   // Attach the created workspace to the specified monitor. The workspace
   // lands at the back of the monitor's focus order, so it isn't displayed
@@ -133,7 +128,9 @@ pub fn activate_spanning_instance(
     None,
   )?;
 
-  workspace.set_home(Some(MonitorIdentity::of(target_monitor)));
+  if page_key.page <= 1 {
+    workspace.set_home(Some(MonitorIdentity::of(target_monitor)));
+  }
 
   sort_workspaces(target_monitor, config)?;
 
@@ -283,16 +280,26 @@ fn instance_name(
 
 /// Tiling direction for a new workspace on the given monitor (vertical
 /// for portrait monitors).
-fn tiling_direction_for(
+/// Creates a detached workspace laid out for the given monitor: portrait
+/// monitors get a vertical stack, landscape monitors a horizontal one.
+fn new_workspace_for(
+  workspace_config: WorkspaceConfig,
   monitor: &Monitor,
-) -> anyhow::Result<TilingDirection> {
-  let monitor_rect = monitor.to_rect()?;
+  config: &UserConfig,
+) -> anyhow::Result<Workspace> {
+  let orientation = Orientation::of(&monitor.to_rect()?);
 
-  Ok(if monitor_rect.height() > monitor_rect.width() {
-    TilingDirection::Vertical
-  } else {
-    TilingDirection::Horizontal
-  })
+  let tiling_direction = match orientation {
+    Orientation::Portrait => TilingDirection::Vertical,
+    Orientation::Landscape => TilingDirection::Horizontal,
+  };
+
+  Ok(Workspace::new(
+    workspace_config,
+    config.value.gaps.clone(),
+    tiling_direction,
+    orientation,
+  ))
 }
 
 /// Gets config for the workspace to activate.

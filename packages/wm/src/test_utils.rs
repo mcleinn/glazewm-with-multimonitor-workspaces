@@ -14,8 +14,8 @@ use crate::{
   commands::container::attach_container,
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
-    NonTilingWindow, RootContainer, SplitContainer, TilingContainer,
-    TilingWindow, Workspace,
+    NonTilingWindow, Orientation, RootContainer, SplitContainer,
+    TilingContainer, TilingWindow, Workspace,
   },
   traits::TilingSizeGetters,
 };
@@ -258,6 +258,8 @@ impl Workspace {
     display_name: Option<String>,
     #[builder(default = TilingDirection::Horizontal)]
     tiling_direction: TilingDirection,
+    #[builder(default = Orientation::Landscape)]
+    layout_orientation: Orientation,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
@@ -272,7 +274,8 @@ impl Workspace {
       spanning_page: 0,
     };
 
-    let workspace = Self::new(config, gaps_config, tiling_direction);
+    let workspace =
+      Self::new(config, gaps_config, tiling_direction, layout_orientation);
 
     for child in tiling_containers {
       attach_container(&child.into(), &workspace.clone().into(), None)

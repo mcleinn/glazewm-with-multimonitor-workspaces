@@ -89,6 +89,54 @@ pub fn sync_monitors_to_page(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<bool> {
+  let mut has_display_changes =
+    display_page_on_all_monitors(page_key, state, config)?;
+
+  if has_display_changes {
+    // Destroy all empty hidden workspaces. A page switch can hide up to
+    // one emptied workspace per monitor, so this intentionally destroys
+    // more than the single workspace that a regular focus switch does.
+    let workspaces_to_destroy = state
+      .workspaces()
+      .into_iter()
+      .filter(|workspace| {
+        !workspace.config().keep_alive
+          && !workspace.has_children()
+          && !workspace.is_displayed()
+      })
+      .collect::<Vec<_>>();
+
+    for workspace in workspaces_to_destroy {
+      deactivate_workspace(workspace, state)?;
+    }
+
+    // Close the gaps left by destroyed instances. This can renumber the
+    // page and move its instances between monitors, so display the
+    // (possibly renumbered) page of the focused instance again.
+    if repage_spanning_desktops(state, config)? {
+      let focused_page = state
+        .focused_container()
+        .and_then(|focused| focused.workspace())
+        .and_then(|workspace| workspace.config().page_key())
+        .unwrap_or_else(|| page_key.clone());
+
+      has_display_changes |=
+        display_page_on_all_monitors(&focused_page, state, config)?;
+    }
+  }
+
+  Ok(has_display_changes)
+}
+
+/// Displays the page's instance on every monitor, synthesizing missing
+/// instances, without any cleanup afterwards.
+///
+/// Returns `true` if the displayed workspace changed on any monitor.
+fn display_page_on_all_monitors(
+  page_key: &PageKey,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
   let focused_monitor = state
     .focused_container()
     .and_then(|focused| focused.monitor())
@@ -118,28 +166,6 @@ pub fn sync_monitors_to_page(
       state,
       config,
     )?;
-  }
-
-  if has_display_changes {
-    // Destroy all empty hidden workspaces. A page switch can hide up to
-    // one emptied workspace per monitor, so this intentionally destroys
-    // more than the single workspace that a regular focus switch does.
-    let workspaces_to_destroy = state
-      .workspaces()
-      .into_iter()
-      .filter(|workspace| {
-        !workspace.config().keep_alive
-          && !workspace.has_children()
-          && !workspace.is_displayed()
-      })
-      .collect::<Vec<_>>();
-
-    for workspace in workspaces_to_destroy {
-      deactivate_workspace(workspace, state)?;
-    }
-
-    // Close the gaps in page numbering left by destroyed instances.
-    repage_spanning_desktops(state, config)?;
   }
 
   Ok(has_display_changes)

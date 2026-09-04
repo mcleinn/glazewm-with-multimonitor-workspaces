@@ -50,9 +50,14 @@ pub fn move_workspace_in_direction(
       );
     }
 
-    // An explicitly moved instance of a spanning workspace now belongs
-    // to the target monitor.
-    if workspace.config().spanning_group.is_some() {
+    // An explicitly moved first-page instance of a spanning workspace
+    // now belongs to the target monitor. Instances of further pages
+    // have no home (see `Workspace::home`).
+    let workspace_config = workspace.config();
+
+    if workspace_config.spanning_group.is_some()
+      && workspace_config.spanning_page <= 1
+    {
       workspace.set_home(Some(MonitorIdentity::of(&target_monitor)));
     }
 

@@ -10,18 +10,24 @@ pub enum HomeMatch {
   /// Same left-to-right position in a layout with the same number of
   /// monitors.
   Index,
-  /// Same pixel bounds.
-  Bounds,
-  /// Same display device.
+  /// Same display device, at different pixel bounds.
   Device,
+  /// Same pixel bounds, on a different (or unknown) display device.
+  Bounds,
+  /// Same display device at the same pixel bounds.
+  DeviceAndBounds,
 }
 
 /// Snapshot of a monitor's identity, used to find the monitor again after
 /// the monitor layout changed (e.g. a disconnect followed by a reconnect).
 ///
-/// Device identifiers are the most reliable, but are generic within RDP
-/// sessions and can change across reboots, so the pixel bounds and the
-/// position within the layout serve as fallbacks.
+/// A monitor that reappears with the same device identifier and bounds is
+/// an unambiguous match. When the two disagree, the bounds win: RDP
+/// sessions hand out generic device identifiers (`Default_Monitor`, only
+/// distinguished by a UID) that are re-assigned to different monitors on
+/// every reconnect, whereas a monitor's position and size in the layout
+/// are stable. The position within the layout is the last resort, for
+/// monitors that changed both device and resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MonitorIdentity {
   #[cfg(target_os = "windows")]
@@ -72,18 +78,17 @@ impl MonitorIdentity {
       }
     };
 
-    if is_same_device {
-      return Some(HomeMatch::Device);
-    }
-
-    if self.bounds == properties.bounds {
-      return Some(HomeMatch::Bounds);
-    }
+    let is_same_bounds = self.bounds == properties.bounds;
 
     let is_same_position = self.index == monitor.index()
       && self.monitor_count == layout_size(monitor);
 
-    is_same_position.then_some(HomeMatch::Index)
+    match (is_same_device, is_same_bounds) {
+      (true, true) => Some(HomeMatch::DeviceAndBounds),
+      (false, true) => Some(HomeMatch::Bounds),
+      (true, false) => Some(HomeMatch::Device),
+      (false, false) => is_same_position.then_some(HomeMatch::Index),
+    }
   }
 }
 
@@ -183,9 +188,80 @@ mod tests {
     assert_eq!(identity.matches(&new_layout[0]), None);
   }
 
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn same_device_at_same_bounds_is_the_strongest_match() {
+    use crate::models::NativeMonitorProperties;
+
+    let device_path = r"\\?\DISPLAY#A#UID257".to_string();
+
+    let old_layout = mock_layout(&[bounds(0), bounds(1000)]);
+    old_layout[1].set_native_properties(
+      NativeMonitorProperties::mock()
+        .bounds(bounds(1000))
+        .device_path(device_path.clone())
+        .call(),
+    );
+    let identity = MonitorIdentity::of(&old_layout[1]);
+
+    let new_layout = mock_layout(&[bounds(0), bounds(1000)]);
+    new_layout[1].set_native_properties(
+      NativeMonitorProperties::mock()
+        .bounds(bounds(1000))
+        .device_path(device_path)
+        .call(),
+    );
+
+    assert_eq!(
+      identity.matches(&new_layout[1]),
+      Some(HomeMatch::DeviceAndBounds)
+    );
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn bounds_beat_a_reassigned_device_path() {
+    use crate::models::NativeMonitorProperties;
+
+    // An RDP session re-assigns its generic device paths on reconnect:
+    // the portrait monitor's old path now belongs to the wide one.
+    let portrait = Rect::from_xy(-1080, 0, 1080, 1920);
+    let wide = Rect::from_xy(0, 0, 3840, 1600);
+    let path_a = r"\\?\DISPLAY#Default_Monitor#UID258".to_string();
+    let path_b = r"\\?\DISPLAY#Default_Monitor#UID259".to_string();
+
+    let old_layout = mock_layout(&[portrait.clone(), wide.clone()]);
+    old_layout[0].set_native_properties(
+      NativeMonitorProperties::mock()
+        .bounds(portrait.clone())
+        .device_path(path_a.clone())
+        .call(),
+    );
+    let identity = MonitorIdentity::of(&old_layout[0]);
+
+    let new_layout = mock_layout(&[portrait.clone(), wide.clone()]);
+    new_layout[0].set_native_properties(
+      NativeMonitorProperties::mock()
+        .bounds(portrait)
+        .device_path(path_b)
+        .call(),
+    );
+    new_layout[1].set_native_properties(
+      NativeMonitorProperties::mock()
+        .bounds(wide)
+        .device_path(path_a)
+        .call(),
+    );
+
+    assert_eq!(identity.matches(&new_layout[0]), Some(HomeMatch::Bounds));
+    assert_eq!(identity.matches(&new_layout[1]), Some(HomeMatch::Device));
+    assert!(HomeMatch::Bounds > HomeMatch::Device);
+  }
+
   #[test]
   fn match_strength_is_ordered() {
-    assert!(HomeMatch::Device > HomeMatch::Bounds);
-    assert!(HomeMatch::Bounds > HomeMatch::Index);
+    assert!(HomeMatch::DeviceAndBounds > HomeMatch::Bounds);
+    assert!(HomeMatch::Bounds > HomeMatch::Device);
+    assert!(HomeMatch::Device > HomeMatch::Index);
   }
 }

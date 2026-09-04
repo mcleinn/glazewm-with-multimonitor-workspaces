@@ -15,8 +15,8 @@ use crate::{
   impl_common_getters, impl_container_debug,
   impl_tiling_direction_getters,
   models::{
-    Container, DirectionContainer, MonitorIdentity, TilingContainer,
-    WindowContainer,
+    Container, DirectionContainer, MonitorIdentity, Orientation,
+    TilingContainer, WindowContainer,
   },
   traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
 };
@@ -33,14 +33,21 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  layout_orientation: Orientation,
+  is_transposed: bool,
   home: Option<MonitorIdentity>,
 }
 
 impl Workspace {
+  /// Creates a detached workspace.
+  ///
+  /// `layout_orientation` is the orientation of the monitor the layout
+  /// is made for (see `layout_orientation`).
   pub fn new(
     config: WorkspaceConfig,
     gaps_config: GapsConfig,
     tiling_direction: TilingDirection,
+    layout_orientation: Orientation,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -50,6 +57,8 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      layout_orientation,
+      is_transposed: false,
       home: None,
     };
 
@@ -86,11 +95,33 @@ impl Workspace {
     config.spanning_group.unwrap_or(config.name)
   }
 
-  /// Identity of the monitor an instance of a spanning workspace belongs
-  /// to. Only set for instances of spanning workspaces.
+  /// Orientation of the monitor the workspace's layout is made for.
   ///
-  /// The instance is moved back to this monitor when it reconnects after
-  /// a monitor layout change.
+  /// Fixed at creation; a layout shown on a monitor of the other
+  /// orientation is transposed instead (see `is_transposed`).
+  pub fn layout_orientation(&self) -> Orientation {
+    self.0.borrow().layout_orientation
+  }
+
+  /// Whether horizontal and vertical tiling are currently swapped
+  /// throughout the workspace, so that the layout fits a monitor of the
+  /// orientation opposite to `layout_orientation`.
+  pub fn is_transposed(&self) -> bool {
+    self.0.borrow().is_transposed
+  }
+
+  /// Records whether the layout is currently transposed.
+  pub fn set_is_transposed(&self, is_transposed: bool) {
+    self.0.borrow_mut().is_transposed = is_transposed;
+  }
+
+  /// Identity of the monitor whose screen this instance of a spanning
+  /// workspace is: the instance is moved back to that monitor's first
+  /// page when the monitor reconnects after a monitor layout change.
+  ///
+  /// Only set for first-page instances of spanning workspaces. Instances
+  /// created for further pages have no home; they are placed wherever
+  /// there's room.
   pub fn home(&self) -> Option<MonitorIdentity> {
     self.0.borrow().home.clone()
   }

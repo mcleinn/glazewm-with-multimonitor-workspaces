@@ -6,13 +6,15 @@ use wm_common::{PageKey, WmEvent, WorkspaceConfig};
 
 use crate::{
   commands::{
-    container::{attach_container, detach_container},
+    container::{
+      attach_container, detach_container, set_focused_descendant,
+    },
     workspace::{
       activate_default_workspace, deactivate_workspace, sort_workspaces,
       spanning_instance_config,
     },
   },
-  models::{Container, Monitor, MonitorIdentity, Workspace},
+  models::{Container, Monitor, MonitorIdentity, Orientation, Workspace},
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
   },
@@ -35,35 +37,44 @@ pub struct PagePlacement {
 /// the connected monitors.
 ///
 /// Instances whose home monitor is connected are moved back to it (page
-/// 1). The remaining instances (from disconnected monitors) are placed on
-/// further pages, one instance per monitor and page, so that a group with
-/// more instances than monitors is browsed page by page. Instances keep
-/// their current slot whenever it's still available, so repeated calls
-/// are stable, and page numbers are kept contiguous.
+/// 1). The remaining instances (screens of disconnected monitors, and
+/// extra screens created on further pages) are packed onto further
+/// pages, one instance per monitor and page, in a fixed order, so that a
+/// group with more instances than monitors is browsed page by page
+/// without gaps. Layouts are transposed to fit the orientation of the
+/// monitor they end up on, and transposed back at home.
 ///
 /// Hidden, empty instances away from their home are destroyed instead of
 /// occupying a page slot. Monitors left without any workspace get a
-/// default one.
+/// default one. The previously focused container keeps focus, even if
+/// its workspace moved to another monitor.
 ///
-/// Callers are responsible for queueing redraws and for re-syncing the
-/// displayed page (e.g. via `sync_monitors_to_page`).
+/// Callers are responsible for re-syncing the displayed page (e.g. via
+/// `sync_monitors_to_page`) when this returns `true`.
+///
+/// Returns `true` if any instance was moved, renumbered, transposed or
+/// destroyed, or a default workspace was activated.
 pub fn repage_spanning_desktops(
   state: &mut WmState,
   config: &UserConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
   let monitors = state.monitors();
 
   if monitors.is_empty() {
-    return Ok(());
+    return Ok(false);
   }
 
+  let focused_container = state.focused_container();
   let workspaces = state.workspaces();
+  let mut has_changes = false;
 
   for group_config in config.spanning_workspace_configs() {
     let mut instances = Vec::new();
 
     for workspace in &workspaces {
-      if workspace.config().spanning_group.as_deref()
+      let workspace_config = workspace.config();
+
+      if workspace_config.spanning_group.as_deref()
         != Some(group_config.name.as_str())
       {
         continue;
@@ -72,8 +83,11 @@ pub fn repage_spanning_desktops(
       let host =
         workspace.monitor().context("Workspace has no monitor.")?;
 
-      // Instances without a recorded home belong to their current host.
-      if workspace.home().is_none() {
+      // A first-page instance without a recorded home is the screen of
+      // its current host (e.g. an extra screen that got packed onto the
+      // first page of a monitor without a screen of its own).
+      if workspace.home().is_none() && workspace_config.spanning_page <= 1
+      {
         workspace.set_home(Some(MonitorIdentity::of(&host)));
       }
 
@@ -82,7 +96,7 @@ pub fn repage_spanning_desktops(
         .is_some_and(|home| home.matches(&host).is_some());
 
       // `keep_alive` only protects instances on their home monitor.
-      let is_kept_alive = workspace.config().keep_alive && is_at_home;
+      let is_kept_alive = workspace_config.keep_alive && is_at_home;
 
       let is_disposable = !workspace.has_children()
         && !workspace.is_displayed()
@@ -90,25 +104,49 @@ pub fn repage_spanning_desktops(
 
       if is_disposable {
         deactivate_workspace(workspace.clone(), state)?;
+        has_changes = true;
       } else {
         instances.push(workspace.clone());
       }
     }
 
     for placement in assign_pages(&instances, &monitors) {
-      apply_placement(&placement, group_config, state)?;
+      has_changes |= apply_placement(&placement, group_config, state)?;
     }
   }
 
   for monitor in &monitors {
     if monitor.child_count() == 0 {
       activate_default_workspace(monitor, state, config)?;
+      has_changes = true;
     }
 
     sort_workspaces(monitor, config)?;
   }
 
-  Ok(())
+  // Moving the focused workspace to the back of another monitor's focus
+  // order silently changes which container is focused. Restore focus
+  // (which also displays the moved workspace on its new monitor).
+  let is_still_attached = focused_container
+    .as_ref()
+    .and_then(CommonGetters::monitor)
+    .and_then(|monitor| monitor.parent())
+    .is_some();
+
+  if let Some(focused_container) =
+    focused_container.filter(|_| is_still_attached)
+  {
+    let has_lost_focus = state
+      .focused_container()
+      .is_none_or(|current| current.id() != focused_container.id());
+
+    if has_lost_focus {
+      set_focused_descendant(&focused_container, None);
+      state.pending_sync.queue_focus_change();
+    }
+  }
+
+  Ok(has_changes)
 }
 
 /// Computes where each instance of one spanning workspace group should
@@ -118,11 +156,14 @@ pub fn repage_spanning_desktops(
 ///    first, ties broken in favor of the current host, then by the home's
 ///    position). Each monitor takes at most one instance; these form page
 ///    1.
-/// 2. Unmatched instances keep their current monitor and page if that slot
-///    is still free.
-/// 3. Remaining instances fill the free slots page by page, in order of
-///    their home's layout size and position.
-/// 4. Page numbers are compacted so that they're contiguous.
+/// 2. The remaining instances fill the free slots page by page, from left
+///    to right: first the screens of disconnected monitors (by their
+///    home's layout size and position), then instances without a home
+///    (extra screens created on further pages, in their current order).
+/// 3. Page numbers are compacted so that they're contiguous.
+///
+/// The result only depends on the instances' homes and, for instances
+/// without a home, their current order, so repeated calls are stable.
 ///
 /// Instances must be attached to one of `monitors`.
 pub fn assign_pages(
@@ -161,14 +202,10 @@ pub fn assign_pages(
   placements
 }
 
-/// Whether the monitor is taller than wide.
-fn is_portrait(monitor: &Monitor) -> anyhow::Result<bool> {
-  let rect = monitor.to_rect()?;
-  Ok(rect.height() > rect.width())
-}
-
 /// Swaps horizontal and vertical tiling throughout a workspace, so that
 /// a layout made for one monitor orientation fits the other.
+///
+/// Callers must keep `Workspace::is_transposed` in sync.
 pub fn transpose_layout(workspace: &Workspace) {
   workspace.set_tiling_direction(workspace.tiling_direction().inverse());
 
@@ -179,6 +216,23 @@ pub fn transpose_layout(workspace: &Workspace) {
       );
     }
   }
+}
+
+/// Whether the workspace's layout has to be transposed (or transposed
+/// back) to fit the orientation of the given monitor.
+///
+/// Decided from the orientation the layout was made for and whether it's
+/// currently transposed, not from the orientation of the current host:
+/// instances can be parked on a monitor without being transposed (e.g.
+/// when their monitor is removed).
+pub fn needs_transposition(
+  workspace: &Workspace,
+  monitor: &Monitor,
+) -> anyhow::Result<bool> {
+  let should_be_transposed =
+    workspace.layout_orientation() != Orientation::of(&monitor.to_rect()?);
+
+  Ok(should_be_transposed != workspace.is_transposed())
 }
 
 /// Position of the workspace's current monitor within `monitors`.
@@ -261,11 +315,13 @@ fn match_home_monitors(
   is_placed
 }
 
-/// Steps 2 and 3: places the instances that didn't match a home monitor.
+/// Step 2: packs the instances that didn't match a home monitor into the
+/// free slots, page by page and from left to right.
 ///
-/// Instances keep their current slot if it's still free; the rest fill
-/// the free slots page by page, ordered by their home's layout size and
-/// position.
+/// Screens of disconnected monitors come first, ordered by their home's
+/// layout size and position, so that e.g. the screens of a 4-monitor
+/// layout shown on 2 monitors keep their left-to-right order. Instances
+/// without a home follow in their current order.
 fn place_orphans(
   orphans: &[usize],
   instances: &[Workspace],
@@ -287,46 +343,9 @@ fn place_orphans(
     )
   });
 
-  let place = |placements: &mut Vec<PagePlacement>,
-               instance_index: usize,
-               monitor_index: usize,
-               page: usize| {
-    placements.push(PagePlacement {
-      workspace: instances[instance_index].clone(),
-      monitor: monitors[monitor_index].clone(),
-      page,
-      is_home: false,
-    });
-  };
-
-  // Step 2: keep instances in their current slot where possible.
-  let mut unplaced = Vec::new();
-
-  for instance_index in orphans {
-    let workspace = &instances[instance_index];
-    let page = workspace.config().spanning_page.max(1);
-
-    while free_slots.len() < page {
-      free_slots.push((0..monitors.len()).collect());
-    }
-
-    let slot = host_index(workspace, monitors).and_then(|host| {
-      free_slots[page - 1].iter().position(|&m| m == host)
-    });
-
-    match slot {
-      Some(slot) => {
-        let monitor_index = free_slots[page - 1].remove(slot);
-        place(placements, instance_index, monitor_index, page);
-      }
-      None => unplaced.push(instance_index),
-    }
-  }
-
-  // Step 3: fill the remaining slots page by page.
   let mut page = 1;
 
-  for instance_index in unplaced {
+  for instance_index in orphans {
     loop {
       if free_slots.len() < page {
         free_slots.push((0..monitors.len()).collect());
@@ -334,7 +353,14 @@ fn place_orphans(
 
       if !free_slots[page - 1].is_empty() {
         let monitor_index = free_slots[page - 1].remove(0);
-        place(placements, instance_index, monitor_index, page);
+
+        placements.push(PagePlacement {
+          workspace: instances[instance_index].clone(),
+          monitor: monitors[monitor_index].clone(),
+          page,
+          is_home: false,
+        });
+
         break;
       }
 
@@ -343,7 +369,7 @@ fn place_orphans(
   }
 }
 
-/// Step 4: renumbers pages so that they're contiguous, starting at 1.
+/// Step 3: renumbers pages so that they're contiguous, starting at 1.
 fn compact_pages(placements: &mut [PagePlacement]) {
   let mut used_pages = placements
     .iter()
@@ -360,12 +386,15 @@ fn compact_pages(placements: &mut [PagePlacement]) {
   }
 }
 
-/// Moves an instance to its assigned monitor and page.
+/// Moves an instance to its assigned monitor and page, transposing its
+/// layout to fit the monitor's orientation.
+///
+/// Returns `true` if anything about the instance changed.
 fn apply_placement(
   placement: &PagePlacement,
   group_config: &WorkspaceConfig,
   state: &mut WmState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
   let workspace = &placement.workspace;
   let current_monitor = workspace.monitor().context("No monitor.")?;
   let current_config = workspace.config();
@@ -386,13 +415,6 @@ fn apply_placement(
       None,
     )?;
 
-    // A layout made for a portrait monitor is a vertical stack; shown on
-    // a landscape monitor it would be squashed. Flipping is its own
-    // inverse, so moving back home restores the original layout.
-    if is_portrait(&current_monitor)? != is_portrait(&placement.monitor)? {
-      transpose_layout(workspace);
-    }
-
     let windows = workspace
       .descendants()
       .filter_map(|descendant| descendant.as_window_container().ok());
@@ -407,6 +429,17 @@ fn apply_placement(
       );
     }
 
+    has_changes = true;
+  }
+
+  // A layout made for a portrait monitor is a vertical stack; shown on
+  // a landscape monitor it would be squashed. Flipping is its own
+  // inverse, so the original layout is restored back home.
+  if needs_transposition(workspace, &placement.monitor)? {
+    info!("Transposing {workspace} to fit {}.", placement.monitor);
+
+    transpose_layout(workspace);
+    workspace.set_is_transposed(!workspace.is_transposed());
     has_changes = true;
   }
 
@@ -434,12 +467,16 @@ fn apply_placement(
   }
 
   if has_changes {
+    state
+      .pending_sync
+      .queue_container_to_redraw(workspace.clone());
+
     state.emit_event(WmEvent::WorkspaceUpdated {
       updated_workspace: workspace.to_dto()?,
     });
   }
 
-  Ok(())
+  Ok(has_changes)
 }
 
 #[cfg(test)]
@@ -450,11 +487,12 @@ mod tests {
   use wm_common::TilingDirection;
   use wm_platform::Rect;
 
-  use super::{assign_pages, transpose_layout};
+  use super::{assign_pages, needs_transposition, transpose_layout};
   use crate::{
     commands::container::attach_container,
     models::{
-      Monitor, MonitorIdentity, SplitContainer, TilingWindow, Workspace,
+      Monitor, MonitorIdentity, Orientation, SplitContainer, TilingWindow,
+      Workspace,
     },
     test_utils::mock_monitor_layout,
     traits::{CommonGetters, TilingDirectionGetters},
@@ -466,12 +504,13 @@ mod tests {
     Rect::from_xy(x, 0, 1000, 800)
   }
 
-  /// Mocks a spanning workspace instance attached to `host`, with the
-  /// given home and page.
+  /// Mocks an instance of spanning group `1` attached to `host`, with
+  /// the given home (`None` for an extra screen without a home) and
+  /// page.
   fn mock_instance(
     name: &str,
     host: &Monitor,
-    home: &Monitor,
+    home: Option<&Monitor>,
     page: usize,
   ) -> Workspace {
     let workspace = Workspace::mock().name(name.to_string()).call();
@@ -480,7 +519,7 @@ mod tests {
     config.spanning_group = Some("1".to_string());
     config.spanning_page = page;
     workspace.set_config(config);
-    workspace.set_home(Some(MonitorIdentity::of(home)));
+    workspace.set_home(home.map(MonitorIdentity::of));
 
     attach_container(
       &workspace.clone().into(),
@@ -525,7 +564,12 @@ mod tests {
 
     let instances = (0..3)
       .map(|i| {
-        mock_instance(&format!("s{i}"), &monitors[i], &monitors[i], 1)
+        mock_instance(
+          &format!("s{i}"),
+          &monitors[i],
+          Some(&monitors[i]),
+          1,
+        )
       })
       .collect::<Vec<_>>();
 
@@ -545,10 +589,10 @@ mod tests {
     let monitors = mock_monitor_layout(&[bounds(0), bounds(1)]);
 
     let instances = vec![
-      mock_instance("s0", &monitors[0], &old_layout[0], 1),
-      mock_instance("s1", &monitors[1], &old_layout[1], 1),
-      mock_instance("s2", &monitors[0], &old_layout[2], 1),
-      mock_instance("s3", &monitors[0], &old_layout[3], 1),
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("s2", &monitors[0], Some(&old_layout[2]), 1),
+      mock_instance("s3", &monitors[0], Some(&old_layout[3]), 1),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
@@ -570,10 +614,10 @@ mod tests {
     // Homes of the first two instances were refreshed while the layout
     // was reduced; the paged instances kept their original homes.
     let instances = vec![
-      mock_instance("s0", &monitors[0], &reduced_layout[0], 1),
-      mock_instance("s1", &monitors[1], &reduced_layout[1], 1),
-      mock_instance("s2", &monitors[0], &old_layout[2], 2),
-      mock_instance("s3", &monitors[1], &old_layout[3], 2),
+      mock_instance("s0", &monitors[0], Some(&reduced_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&reduced_layout[1]), 1),
+      mock_instance("s2", &monitors[0], Some(&old_layout[2]), 2),
+      mock_instance("s3", &monitors[1], Some(&old_layout[3]), 2),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
@@ -597,10 +641,10 @@ mod tests {
     ]);
 
     let instances = vec![
-      mock_instance("s0", &monitors[0], &old_layout[0], 1),
-      mock_instance("s1", &monitors[1], &old_layout[1], 1),
-      mock_instance("s2", &monitors[0], &old_layout[2], 2),
-      mock_instance("s3", &monitors[1], &old_layout[3], 2),
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("s2", &monitors[0], Some(&old_layout[2]), 2),
+      mock_instance("s3", &monitors[1], Some(&old_layout[3]), 2),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
@@ -621,10 +665,10 @@ mod tests {
 
     // Parked in arbitrary order on the surviving monitors.
     let instances = vec![
-      mock_instance("s3", &monitors[0], &old_layout[3], 1),
-      mock_instance("s1", &monitors[1], &old_layout[1], 1),
-      mock_instance("s0", &monitors[0], &old_layout[0], 1),
-      mock_instance("s2", &monitors[1], &old_layout[2], 1),
+      mock_instance("s3", &monitors[0], Some(&old_layout[3]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s2", &monitors[1], Some(&old_layout[2]), 1),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
@@ -636,22 +680,25 @@ mod tests {
   }
 
   #[test]
-  fn instances_keep_their_slot_when_still_free() {
+  fn pages_are_repacked_after_a_transient_layout() {
     let old_layout =
       mock_monitor_layout(&[bounds(0), bounds(1), bounds(2), bounds(3)]);
     let monitors = mock_monitor_layout(&[bounds(0), bounds(1)]);
 
-    // Page 1 has a free slot on monitor 1, but the page-2 instances stay
-    // where they are (they may be displayed right now).
+    // While only monitor 0 was connected, every instance needed its own
+    // page. With monitor 1 back, the pages are packed again instead of
+    // keeping one half-empty page per instance.
     let instances = vec![
-      mock_instance("s0", &monitors[0], &old_layout[0], 1),
-      mock_instance("s2", &monitors[0], &old_layout[2], 2),
-      mock_instance("s3", &monitors[1], &old_layout[3], 2),
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("s2", &monitors[0], Some(&old_layout[2]), 2),
+      mock_instance("s3", &monitors[0], Some(&old_layout[3]), 3),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
 
     assert_eq!(placements["s0"], (0, 1, true));
+    assert_eq!(placements["s1"], (1, 1, true));
     assert_eq!(placements["s2"], (0, 2, false));
     assert_eq!(placements["s3"], (1, 2, false));
   }
@@ -664,14 +711,14 @@ mod tests {
 
     // Page 2 was emptied and destroyed; page 3 moves up.
     let instances = vec![
-      mock_instance("s0", &monitors[0], &old_layout[0], 1),
-      mock_instance("s1", &monitors[1], &old_layout[1], 1),
-      mock_instance("s3", &monitors[1], &old_layout[3], 3),
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("s3", &monitors[1], Some(&old_layout[3]), 3),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
 
-    assert_eq!(placements["s3"], (1, 2, false));
+    assert_eq!(placements["s3"], (0, 2, false));
   }
 
   #[test]
@@ -681,14 +728,71 @@ mod tests {
 
     // Both instances match monitor 0 by bounds equally well.
     let instances = vec![
-      mock_instance("a", &monitors[1], &old_layout[0], 1),
-      mock_instance("b", &monitors[0], &old_layout[0], 1),
+      mock_instance("a", &monitors[1], Some(&old_layout[0]), 1),
+      mock_instance("b", &monitors[0], Some(&old_layout[0]), 1),
     ];
 
     let placements = placements_by_name(&instances, &monitors);
 
     assert_eq!(placements["b"], (0, 1, true));
     assert_eq!(placements["a"], (1, 1, false));
+  }
+
+  #[test]
+  fn extra_screens_never_claim_a_home_slot() {
+    let monitors = mock_monitor_layout(&[bounds(0), bounds(1)]);
+
+    // Monitor 1 came back: its own screen `s1` was parked on monitor 0,
+    // while an extra screen `x` (created on a further page while monitor
+    // 1 hosted it) has no home and must not take monitor 1's first page.
+    let instances = vec![
+      mock_instance("x", &monitors[1], None, 3),
+      mock_instance("s0", &monitors[0], Some(&monitors[0]), 1),
+      mock_instance("s1", &monitors[0], Some(&monitors[1]), 1),
+    ];
+
+    let placements = placements_by_name(&instances, &monitors);
+
+    assert_eq!(placements["s0"], (0, 1, true));
+    assert_eq!(placements["s1"], (1, 1, true));
+    assert_eq!(placements["x"], (0, 2, false));
+  }
+
+  #[test]
+  fn extra_screens_follow_screens_of_disconnected_monitors() {
+    let old_layout =
+      mock_monitor_layout(&[bounds(0), bounds(1), bounds(2), bounds(3)]);
+    let monitors = mock_monitor_layout(&[bounds(0), bounds(1)]);
+
+    let instances = vec![
+      mock_instance("s0", &monitors[0], Some(&old_layout[0]), 1),
+      mock_instance("s1", &monitors[1], Some(&old_layout[1]), 1),
+      mock_instance("x", &monitors[1], None, 2),
+      mock_instance("y", &monitors[0], None, 3),
+      mock_instance("s3", &monitors[0], Some(&old_layout[3]), 4),
+    ];
+
+    let placements = placements_by_name(&instances, &monitors);
+
+    assert_eq!(placements["s3"], (0, 2, false));
+    assert_eq!(placements["x"], (1, 2, false));
+    assert_eq!(placements["y"], (0, 3, false));
+  }
+
+  #[test]
+  fn extra_screens_fill_free_first_page_slots() {
+    let monitors = mock_monitor_layout(&[bounds(0), bounds(1)]);
+
+    // A monitor without a screen of its own takes the extra screen.
+    let instances = vec![
+      mock_instance("s0", &monitors[0], Some(&monitors[0]), 1),
+      mock_instance("x", &monitors[0], None, 2),
+    ];
+
+    let placements = placements_by_name(&instances, &monitors);
+
+    assert_eq!(placements["s0"], (0, 1, true));
+    assert_eq!(placements["x"], (1, 1, false));
   }
 
   #[test]
@@ -725,20 +829,38 @@ mod tests {
   }
 
   #[test]
-  fn instances_without_home_are_treated_as_orphans() {
-    let monitors = mock_monitor_layout(&[bounds(0)]);
+  fn transposition_depends_on_layout_orientation_not_on_host() {
+    let portrait = Rect::from_xy(-1080, 0, 1080, 1920);
+    let monitors = mock_monitor_layout(&[portrait, bounds(1)]);
 
-    let workspace = Workspace::mock().name("x".to_string()).call();
-    let mut config = workspace.config();
-    config.spanning_group = Some("1".to_string());
-    config.spanning_page = 1;
-    workspace.set_config(config);
+    // A portrait layout parked (untransposed) on a landscape monitor.
+    let workspace = Workspace::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .layout_orientation(Orientation::Portrait)
+      .call();
     attach_container(
       &workspace.clone().into(),
-      &monitors[0].clone().into(),
+      &monitors[1].clone().into(),
       None,
     )
     .expect("Failed to attach workspace.");
+
+    assert!(needs_transposition(&workspace, &monitors[1]).unwrap());
+    assert!(!needs_transposition(&workspace, &monitors[0]).unwrap());
+
+    // Once transposed, staying on the landscape monitor needs nothing,
+    // while going back home needs the layout transposed back.
+    workspace.set_is_transposed(true);
+
+    assert!(!needs_transposition(&workspace, &monitors[1]).unwrap());
+    assert!(needs_transposition(&workspace, &monitors[0]).unwrap());
+  }
+
+  #[test]
+  fn instances_without_home_are_treated_as_orphans() {
+    let monitors = mock_monitor_layout(&[bounds(0)]);
+
+    let workspace = mock_instance("x", &monitors[0], None, 1);
 
     let placements = placements_by_name(&[workspace], &monitors);
 
