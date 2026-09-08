@@ -76,6 +76,30 @@ pub enum Error {
   InvalidKeybinding,
 }
 
+impl Error {
+  /// Whether the error is the OS denying access to the target of the
+  /// operation.
+  ///
+  /// This is what a window of a process with higher privileges than the
+  /// WM's (e.g. Task Manager while the WM isn't elevated) fails with when
+  /// the WM tries to move it.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **macOS**: Only `std::io::Error`s are recognized.
+  #[must_use]
+  pub fn is_access_denied(&self) -> bool {
+    match self {
+      #[cfg(target_os = "windows")]
+      Self::Windows(err) => {
+        err.code() == windows::Win32::Foundation::E_ACCESSDENIED
+      }
+      Self::Io(err) => err.kind() == std::io::ErrorKind::PermissionDenied,
+      _ => false,
+    }
+  }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
   #[error(
@@ -104,3 +128,35 @@ pub enum ParseError {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+  use super::Error;
+
+  #[test]
+  fn access_denied_io_error() {
+    let denied = Error::Io(std::io::ErrorKind::PermissionDenied.into());
+    assert!(denied.is_access_denied());
+
+    let other = Error::Io(std::io::ErrorKind::NotFound.into());
+    assert!(!other.is_access_denied());
+  }
+
+  #[test]
+  fn access_denied_other_error() {
+    assert!(!Error::WindowNotFound.is_access_denied());
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn access_denied_windows_error() {
+    use windows::Win32::Foundation::{E_ACCESSDENIED, E_INVALIDARG};
+
+    let denied =
+      Error::Windows(windows::core::Error::from(E_ACCESSDENIED));
+    assert!(denied.is_access_denied());
+
+    let other = Error::Windows(windows::core::Error::from(E_INVALIDARG));
+    assert!(!other.is_access_denied());
+  }
+}

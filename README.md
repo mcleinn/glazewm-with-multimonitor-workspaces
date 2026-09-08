@@ -29,6 +29,8 @@
 >
 > Also fixed: **dragging a window whose app resizes it on drag start** (e.g. Windows Terminal restoring its preferred size) no longer snaps back to its old tile on drop — the drag was previously misclassified as a resize.
 >
+> Also fixed: **windows of elevated processes** (e.g. Task Manager, while GlazeWM itself isn't elevated) no longer leave a permanent hole in the layout. Windows refuses to let an unelevated process move them, so upstream keeps such a window tiled at a position it can never reach: the tile stays empty, and every window you add just shrinks the rest. They are now dropped from the layout the first time positioning them is denied, and ignored from then on, like windows matched by an `ignore` window rule.
+>
 > New config option: **`window_behavior.initial_monitor`** — set it to `'cursor'` to open new windows on the monitor under the cursor (e.g. the monitor whose taskbar you clicked to launch the app), instead of wherever Windows spawns them (`'spawn'`, the default and upstream behavior). The fork's default config — both the `config.yaml` bundled with the release zips and the config generated on first start — has it enabled; if you keep an existing config, add `initial_monitor: 'cursor'` under `window_behavior:` yourself.
 
 <div align="center">

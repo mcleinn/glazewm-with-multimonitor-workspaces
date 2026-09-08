@@ -1,3 +1,4 @@
+mod ignore_uncontrollable_window;
 mod ignore_window;
 mod manage_window;
 mod move_window_in_direction;
@@ -9,6 +10,7 @@ mod set_window_size;
 mod unmanage_window;
 mod update_window_state;
 
+pub use ignore_uncontrollable_window::*;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use move_window_in_direction::*;

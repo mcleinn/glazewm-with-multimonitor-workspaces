@@ -12,16 +12,51 @@ use wm_platform::{CornerStyle, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
+  commands::window::ignore_uncontrollable_window,
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
+/// Applies the pending changes of the WM's state to the OS.
+///
+/// Windows that the WM isn't allowed to position are ignored, which queues
+/// further changes (resizing the siblings that fill the freed up space,
+/// moving focus), so syncing is repeated until nothing new is queued. This
+/// terminates because every extra pass removes at least one window from
+/// the tree.
 pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  while state.pending_sync.has_changes() {
+    let uncontrollable_windows = sync_pending_changes(state, config)?;
+    state.pending_sync.clear();
+
+    for window in uncontrollable_windows {
+      tracing::warn!(
+        "Ignoring window that the WM isn't allowed to position: \
+         {window}. Windows of elevated processes can only be managed \
+         when the WM is elevated as well."
+      );
+
+      ignore_uncontrollable_window(window, state)?;
+    }
+  }
+
+  Ok(())
+}
+
+/// Runs a single sync pass over the pending changes.
+///
+/// Returns the windows that the OS denied the WM access to.
+fn sync_pending_changes(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<Vec<WindowContainer>> {
+  let mut uncontrollable_windows = Vec::new();
+
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
@@ -32,7 +67,8 @@ pub fn platform_sync(
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    redraw_containers(&focused_container, state, config)?;
+    uncontrollable_windows =
+      redraw_containers(&focused_container, state, config)?;
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -73,9 +109,7 @@ pub fn platform_sync(
     }
   }
 
-  state.pending_sync.clear();
-
-  Ok(())
+  Ok(uncontrollable_windows)
 }
 
 fn sync_focus(
@@ -169,12 +203,17 @@ fn windows_to_bring_to_front(
   Ok(windows_to_bring_to_front)
 }
 
+/// Applies the position, z-order and visibility of the containers that are
+/// queued for a redraw.
+///
+/// Returns the windows that the OS denied the WM access to.
 #[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
   config: &UserConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<WindowContainer>> {
+  let mut uncontrollable_windows = Vec::new();
   let windows_to_redraw = state.windows_to_redraw();
   let windows_to_bring_to_front =
     windows_to_bring_to_front(focused_container, state)?;
@@ -289,6 +328,13 @@ fn redraw_containers(
       reposition_window(window, *hide_corner, &z_order, is_visible, config)
     {
       tracing::warn!("Failed to set window position: {}", err);
+
+      // Skip the remaining calls for the window, since they'd be denied
+      // as well.
+      if is_access_denied(&err) {
+        uncontrollable_windows.push((*window).clone());
+        continue;
+      }
     }
 
     // Whether the window is either transitioning to or from fullscreen.
@@ -332,7 +378,17 @@ fn redraw_containers(
     }
   }
 
-  Ok(())
+  Ok(uncontrollable_windows)
+}
+
+/// Whether an error was caused by the OS denying the WM access to a
+/// window.
+fn is_access_denied(err: &anyhow::Error) -> bool {
+  err.chain().any(|cause| {
+    cause
+      .downcast_ref::<wm_platform::Error>()
+      .is_some_and(wm_platform::Error::is_access_denied)
+  })
 }
 
 fn reposition_window(
