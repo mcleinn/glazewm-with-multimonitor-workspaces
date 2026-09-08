@@ -1,12 +1,12 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{DisplayState, WindowRuleEvent, WmEvent};
+use wm_common::{DisplayState, WindowRuleEvent, WindowState, WmEvent};
 use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::run_window_rules,
+    window::{run_window_rules, update_window_state},
     workspace::{focus_workspace, focus_workspace_instance},
   },
   models::WorkspaceTarget,
@@ -20,6 +20,10 @@ pub fn handle_window_focused(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
+  // Has to run before the window is looked up, since it can replace the
+  // window's container.
+  restore_focused_window(native_window, state, config)?;
+
   let found_window = state.window_from_native(native_window);
   let focused_container =
     state.focused_container().context("No focused container.")?;
@@ -107,6 +111,44 @@ pub fn handle_window_focused(
       focused_container: window.to_dto()?,
     });
   }
+
+  Ok(())
+}
+
+/// Transitions a window that the WM has as minimized back to its previous
+/// state, after the OS has given it focus.
+///
+/// The OS restores a minimized window when it's focused (e.g. by clicking
+/// its taskbar button), but the `MinimizeEnded` event for that restore can
+/// arrive after the focus event, and its handler can read the window as
+/// still minimized while the restore is in flight. Either way the WM would
+/// be left with the window as minimized and minimize it again on its next
+/// redraw, so `NativeWindow::is_minimized` is deliberately not consulted
+/// here: a window that has focus is never minimized.
+fn restore_focused_window(
+  native_window: &NativeWindow,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let Some(window) = state.window_from_native(native_window) else {
+    return Ok(());
+  };
+
+  if window.state() != WindowState::Minimized {
+    return Ok(());
+  }
+
+  info!("Window restored by focus: {window}");
+
+  window.update_native_properties(|properties| {
+    properties.is_minimized = false;
+  });
+
+  let target_state = window
+    .prev_state()
+    .unwrap_or(WindowState::default_from_config(&config.value));
+
+  update_window_state(window, target_state, state, config)?;
 
   Ok(())
 }
