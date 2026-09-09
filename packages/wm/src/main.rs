@@ -42,6 +42,8 @@ mod pending_sync;
 mod sys_tray;
 mod traits;
 mod user_config;
+#[cfg(target_os = "windows")]
+mod window_recovery;
 mod wm;
 mod wm_state;
 
@@ -285,6 +287,9 @@ async fn start_wm(
         ).map(|_| ())
       },
     };
+
+    #[cfg(target_os = "windows")]
+    wm.state.record_managed_windows();
 
     if let Err(err) = res {
       tracing::error!("{:?}", err);

@@ -248,6 +248,19 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn restore(&self, outer_frame: Option<&Rect>) -> crate::Result<()>;
 
+  /// Makes the window visible again after the WM hid it, regardless of
+  /// the hide method that was used: the window is both uncloaked and
+  /// shown.
+  ///
+  /// Showing is attempted even if uncloaking fails (e.g. for windows that
+  /// the shell doesn't track), in which case the uncloak error is
+  /// returned afterwards.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn restore_visibility(&self) -> crate::Result<()>;
+
   /// Cloaks or uncloaks the window.
   ///
   /// # Platform-specific
@@ -416,6 +429,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn restore(&self, outer_frame: Option<&Rect>) -> crate::Result<()> {
     self.inner.restore(outer_frame)
+  }
+
+  fn restore_visibility(&self) -> crate::Result<()> {
+    self.inner.restore_visibility()
   }
 
   fn is_shell_cloaked(&self) -> crate::Result<bool> {

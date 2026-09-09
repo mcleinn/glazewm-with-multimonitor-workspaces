@@ -41,7 +41,9 @@ async fn main() -> anyhow::Result<()> {
         managed_handles.into_iter().map(NativeWindow::from_handle);
 
       for window in managed_windows {
-        if let Err(err) = window.show() {
+        // Windows on hidden workspaces have to be uncloaked as well,
+        // since the OS never lifts the WM's cloak.
+        if let Err(err) = window.restore_visibility() {
           tracing::warn!("Failed to show window: {:?}", err);
         }
 

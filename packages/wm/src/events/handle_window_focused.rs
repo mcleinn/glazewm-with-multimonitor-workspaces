@@ -6,7 +6,7 @@ use wm_platform::NativeWindow;
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::{run_window_rules, update_window_state},
+    window::{manage_window, run_window_rules, update_window_state},
     workspace::{focus_workspace, focus_workspace_instance},
   },
   models::WorkspaceTarget,
@@ -20,9 +20,10 @@ pub fn handle_window_focused(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
-  // Has to run before the window is looked up, since it can replace the
-  // window's container.
+  // Both have to run before the window is looked up, since they can
+  // replace or add the window's container.
   restore_focused_window(native_window, state, config)?;
+  manage_focused_window(native_window, state, config)?;
 
   let found_window = state.window_from_native(native_window);
   let focused_container =
@@ -151,6 +152,66 @@ fn restore_focused_window(
   update_window_state(window, target_state, state, config)?;
 
   Ok(())
+}
+
+/// Manages a window that received focus while unmanaged.
+///
+/// Windows are normally managed when they're shown, or on startup if
+/// they're already visible. A window that is cloaked at that point is
+/// skipped as invisible. That's correct for windows on another native
+/// virtual desktop, which are managed once a desktop switch uncloaks
+/// them, but a cloak left behind by a previous WM instance that exited
+/// without restoring its hidden windows is never lifted by the OS. Such a
+/// window stays invisible even though the OS focuses it (e.g. when its
+/// taskbar button is clicked), so it's managed here, after lifting the
+/// stale cloak.
+///
+/// Managing on focus is limited by the same checks as managing on show,
+/// so windows that aren't manageable (e.g. the taskbar) are unaffected.
+fn manage_focused_window(
+  native_window: &NativeWindow,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  if state.window_from_native(native_window).is_some()
+    || state.ignored_windows.contains(native_window)
+  {
+    return Ok(());
+  }
+
+  #[cfg(target_os = "windows")]
+  uncloak_stale_window(native_window);
+
+  manage_window(native_window.clone(), None, state, config)
+}
+
+/// Lifts a cloak that a previous WM instance left on a focused window.
+///
+/// A focused window on the current native virtual desktop can't
+/// legitimately be shell-cloaked, so its cloak is stale. Windows on
+/// another virtual desktop are left alone, since the desktop switch that
+/// follows uncloaks them.
+#[cfg(target_os = "windows")]
+fn uncloak_stale_window(native_window: &NativeWindow) {
+  use wm_platform::NativeWindowWindowsExt;
+
+  let has_stale_cloak = native_window.is_shell_cloaked().unwrap_or(false)
+    && native_window
+      .is_on_current_virtual_desktop()
+      .unwrap_or(false);
+
+  if !has_stale_cloak {
+    return;
+  }
+
+  info!(
+    "Lifting stale cloak from focused window: {:?}",
+    native_window.id()
+  );
+
+  if let Err(err) = native_window.set_cloaked(false) {
+    tracing::warn!("Failed to lift stale cloak: {err}");
+  }
 }
 
 /// Returns true if focus should be reassigned to the WM's focus container.

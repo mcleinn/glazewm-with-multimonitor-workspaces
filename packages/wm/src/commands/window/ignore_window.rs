@@ -21,6 +21,10 @@ pub fn ignore_window(
   state.ignored_windows.push(window.native().clone());
   detach_container(window.clone().into())?;
 
+  // The window may be hidden if it's on a non-displayed workspace.
+  #[cfg(target_os = "windows")]
+  crate::window_recovery::show_released_window(&window.native());
+
   // After detaching the container, flatten any redundant split containers.
   // For example, in the layout V[1 H[2]] where container 1 is detached to
   // become V[H[2]], this will then need to be flattened to V[2].

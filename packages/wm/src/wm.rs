@@ -63,8 +63,11 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
 
-    let mut state = WmState::new(dispatcher, event_tx, exit_tx);
+    let mut state = WmState::new(dispatcher, event_tx, exit_tx)?;
     state.populate(config)?;
+
+    #[cfg(target_os = "windows")]
+    state.record_managed_windows();
 
     Ok(Self {
       event_rx,

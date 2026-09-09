@@ -13,6 +13,8 @@ use wm_platform::{
 #[cfg(target_os = "windows")]
 use wm_platform::{NativeWindowWindowsExt, OpacityValue};
 
+#[cfg(target_os = "windows")]
+use crate::window_recovery::{show_released_window, ManagedWindowsRecord};
 use crate::{
   commands::{
     container::set_focused_descendant,
@@ -72,6 +74,11 @@ pub struct WmState {
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
+  /// Record of the managed windows, persisted for recovery by the next
+  /// WM instance if this one doesn't get to restore them.
+  #[cfg(target_os = "windows")]
+  managed_windows_record: ManagedWindowsRecord,
+
   /// Sender for emitting WM-related events.
   event_tx: mpsc::UnboundedSender<WmEvent>,
 
@@ -84,8 +91,8 @@ impl WmState {
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
-  ) -> Self {
-    Self {
+  ) -> anyhow::Result<Self> {
+    Ok(Self {
       root_container: RootContainer::new(),
       dispatcher,
       pending_sync: PendingSync::default(),
@@ -97,9 +104,11 @@ impl WmState {
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
+      #[cfg(target_os = "windows")]
+      managed_windows_record: ManagedWindowsRecord::new()?,
       event_tx,
       exit_tx,
-    }
+    })
   }
 
   /// Populates the initial WM state by creating containers for all
@@ -121,6 +130,13 @@ impl WmState {
           add_monitor(native_display, native_properties, self)?;
         move_bounded_workspaces_to_new_monitor(&monitor, self, config)?;
       }
+    }
+
+    // Show windows that a previous WM instance left hidden, so that
+    // they're picked up below.
+    #[cfg(target_os = "windows")]
+    if let Err(err) = self.managed_windows_record.restore_previous() {
+      warn!("Failed to restore windows of previous WM instance: {err:?}");
     }
 
     // Manage windows in reverse z-order (bottom to top). This helps to
@@ -727,6 +743,17 @@ impl WmState {
       .cloned()
   }
 
+  /// Records the managed windows for recovery by the next WM instance.
+  ///
+  /// Cheap to call after every processed event: the record is only
+  /// written when the managed windows changed.
+  #[cfg(target_os = "windows")]
+  pub fn record_managed_windows(&mut self) {
+    if let Err(err) = self.managed_windows_record.update(&self.windows()) {
+      warn!("Failed to record managed windows: {err:?}");
+    }
+  }
+
   /// Cleans up windows that are no longer alive.
   ///
   /// This addresses the "ghost window" issue where applications may
@@ -768,16 +795,19 @@ impl Drop for WmState {
       // Reset any effects on Windows.
       #[cfg(target_os = "windows")]
       {
-        if let Err(err) = window.native().show() {
-          warn!("Failed to show window: {:?}", err);
-        }
+        show_released_window(&window.native());
 
-        let _ = window.native().set_taskbar_visibility(true);
         let _ = window.native().set_border_color(None);
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));
       }
+    }
+
+    // All windows are restored, so there's nothing left to recover.
+    #[cfg(target_os = "windows")]
+    if let Err(err) = self.managed_windows_record.clear() {
+      warn!("Failed to clear managed windows record: {err:?}");
     }
   }
 }

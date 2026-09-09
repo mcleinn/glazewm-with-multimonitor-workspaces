@@ -611,6 +611,13 @@ impl NativeWindow {
     }
   }
 
+  /// Implements [`NativeWindowWindowsExt::restore_visibility`].
+  pub(crate) fn restore_visibility(&self) -> crate::Result<()> {
+    let uncloak_result = self.set_cloaked(false);
+    self.show()?;
+    uncloak_result
+  }
+
   /// Implements [`NativeWindowWindowsExt::set_cloaked`].
   pub(crate) fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
     COM_INIT.with(|com_init| -> crate::Result<()> {

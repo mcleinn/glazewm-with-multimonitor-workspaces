@@ -18,5 +18,8 @@ pub fn ignore_uncontrollable_window(
 ) -> anyhow::Result<()> {
   state.ignored_windows.push(window.native().clone());
 
+  // The window may be hidden if it's on a non-displayed workspace.
+  crate::window_recovery::show_released_window(&window.native());
+
   unmanage_window(window, state)
 }
