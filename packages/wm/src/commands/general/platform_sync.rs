@@ -324,61 +324,75 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     );
 
-    if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, config)
-    {
-      tracing::warn!("Failed to set window position: {}", err);
-
+    match reposition_window(
+      window,
+      *hide_corner,
+      &z_order,
+      is_visible,
+      config,
+    ) {
       // Skip the remaining calls for the window, since they'd be denied
       // as well.
-      if is_access_denied(&err) {
+      Err(err) if is_access_denied(&err) => {
+        tracing::warn!("Failed to set window position: {}", err);
         uncontrollable_windows.push((*window).clone());
-        continue;
       }
-    }
-
-    // Whether the window is either transitioning to or from fullscreen.
-    // TODO: This check can be improved since `prev_state` can be
-    // fullscreen without it needing to be marked as not fullscreen.
-    #[cfg(target_os = "windows")]
-    {
-      let is_transitioning_fullscreen =
-        match (window.prev_state(), window.state()) {
-          (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
-          (Some(WindowState::Fullscreen(_)), _) => true,
-          _ => false,
-        };
-
-      if is_transitioning_fullscreen {
-        if let Err(err) = window.native().mark_fullscreen(matches!(
-          window.state(),
-          WindowState::Fullscreen(_)
-        )) {
-          tracing::warn!("Failed to mark window as fullscreen: {}", err);
+      result => {
+        if let Err(err) = result {
+          tracing::warn!("Failed to set window position: {}", err);
         }
-      }
-    }
 
-    // Skip setting taskbar visibility if the window is hidden (has no
-    // effect). Since cloaked windows are normally always visible in the
-    // taskbar, we only need to set visibility if `show_all_in_taskbar` is
-    // `false`.
-    #[cfg(target_os = "windows")]
-    if config.value.general.hide_method == HideMethod::Cloak
-      && !config.value.general.show_all_in_taskbar
-      && matches!(
-        window.display_state(),
-        DisplayState::Showing | DisplayState::Hiding
-      )
-    {
-      if let Err(err) = window.native().set_taskbar_visibility(is_visible)
-      {
-        tracing::warn!("Failed to set taskbar visibility: {}", err);
+        #[cfg(target_os = "windows")]
+        sync_shell_state(window, is_visible, config);
       }
     }
   }
 
   Ok(uncontrollable_windows)
+}
+
+/// Updates the window's fullscreen marking and taskbar visibility with
+/// the shell after it has been repositioned.
+#[cfg(target_os = "windows")]
+fn sync_shell_state(
+  window: &WindowContainer,
+  is_visible: bool,
+  config: &UserConfig,
+) {
+  // Whether the window is either transitioning to or from fullscreen.
+  // TODO: This check can be improved since `prev_state` can be
+  // fullscreen without it needing to be marked as not fullscreen.
+  let is_transitioning_fullscreen =
+    match (window.prev_state(), window.state()) {
+      (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
+      (Some(WindowState::Fullscreen(_)), _) => true,
+      _ => false,
+    };
+
+  if is_transitioning_fullscreen {
+    if let Err(err) = window.native().mark_fullscreen(matches!(
+      window.state(),
+      WindowState::Fullscreen(_)
+    )) {
+      tracing::warn!("Failed to mark window as fullscreen: {}", err);
+    }
+  }
+
+  // Skip setting taskbar visibility if the window is hidden (has no
+  // effect). Since cloaked windows are normally always visible in the
+  // taskbar, we only need to set visibility if `show_all_in_taskbar` is
+  // `false`.
+  if config.value.general.hide_method == HideMethod::Cloak
+    && !config.value.general.show_all_in_taskbar
+    && matches!(
+      window.display_state(),
+      DisplayState::Showing | DisplayState::Hiding
+    )
+  {
+    if let Err(err) = window.native().set_taskbar_visibility(is_visible) {
+      tracing::warn!("Failed to set taskbar visibility: {}", err);
+    }
+  }
 }
 
 /// Whether an error was caused by the OS denying the WM access to a

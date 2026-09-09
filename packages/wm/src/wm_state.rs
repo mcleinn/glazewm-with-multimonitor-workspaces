@@ -87,6 +87,11 @@ pub struct WmState {
 }
 
 impl WmState {
+  /// Creates the WM state.
+  ///
+  /// Only fallible on Windows, where the managed windows record is set
+  /// up.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unnecessary_wraps))]
   pub fn new(
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
