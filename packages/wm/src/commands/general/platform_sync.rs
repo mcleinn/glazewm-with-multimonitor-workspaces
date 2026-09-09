@@ -26,15 +26,19 @@ use crate::{
 /// moving focus), so syncing is repeated until nothing new is queued. This
 /// terminates because every extra pass removes at least one window from
 /// the tree.
+///
+/// The pending changes are cleared even if a pass fails. Otherwise the
+/// same failure would repeat on every subsequent event, which surfaces as
+/// an endless series of error dialogs.
 pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   while state.pending_sync.has_changes() {
-    let uncontrollable_windows = sync_pending_changes(state, config)?;
+    let sync_result = sync_pending_changes(state, config);
     state.pending_sync.clear();
 
-    for window in uncontrollable_windows {
+    for window in sync_result? {
       tracing::warn!(
         "Ignoring window that the WM isn't allowed to position: \
          {window}. Windows of elevated processes can only be managed \
@@ -249,10 +253,23 @@ fn redraw_containers(
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
 
-    let workspace =
-      window.workspace().context("Window has no workspace.")?;
+    // A window without a workspace or monitor is no longer part of the
+    // tree (e.g. left behind by a failed move). It can't be positioned,
+    // and shouldn't prevent the other windows from being redrawn.
+    let Some(workspace) = window.workspace() else {
+      tracing::warn!(
+        "Skipping redraw of window without workspace: {window}"
+      );
+      continue;
+    };
 
-    let monitor = window.monitor().context("No monitor.")?;
+    let Some(monitor) = window.monitor() else {
+      tracing::warn!(
+        "Skipping redraw of window without monitor: {window}"
+      );
+      continue;
+    };
+
     let hide_corner = monitors_by_hide_corner
       .iter()
       .find(|(m, _)| m.id() == monitor.id())

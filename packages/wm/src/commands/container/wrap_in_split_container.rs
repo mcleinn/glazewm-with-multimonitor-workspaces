@@ -1,17 +1,30 @@
 use std::collections::VecDeque;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 
 use crate::{
   models::{Container, SplitContainer, TilingContainer},
   traits::{CommonGetters, TilingSizeGetters},
 };
 
+/// Wraps the given children of `target_parent` in a new split container,
+/// which takes their place in the parent.
+///
+/// Fails if any of the children isn't a child of `target_parent`, since
+/// wrapping them via a stale parent (e.g. a split container that has
+/// since been flattened) would orphan them outside the tree.
 pub fn wrap_in_split_container(
   split_container: &SplitContainer,
   target_parent: &Container,
   target_children: &[TilingContainer],
 ) -> anyhow::Result<()> {
+  if target_children
+    .iter()
+    .any(|child| child.parent().as_ref() != Some(target_parent))
+  {
+    bail!("Containers to wrap aren't children of the target parent.");
+  }
+
   let starting_index = target_children
     .iter()
     .map(CommonGetters::index)
