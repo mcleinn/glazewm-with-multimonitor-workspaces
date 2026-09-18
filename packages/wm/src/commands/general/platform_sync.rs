@@ -120,22 +120,21 @@ fn sync_focus(
   focused_container: &Container,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  let native_window = focused_container.as_window_container().ok();
-
   // Sets focus to the appropriate target:
   // - If the container is a window, focuses that window.
-  // - If the container is a workspace, "resets" focus by focusing the
-  //   desktop window.
+  // - If the container is a workspace or a minimized window, "resets"
+  //   focus by focusing the desktop window.
   //
   // In either case, a `PlatformEvent::WindowFocused` event is subsequently
   // triggered.
-  let result = if let Some(window) = native_window {
-    tracing::info!("Setting focus to window: {window}");
-    window.native().focus()
-  } else {
-    tracing::info!("Setting focus to the desktop window.");
-    state.dispatcher.reset_focus()
-  };
+  let result =
+    if let Some(window) = focused_container.native_focus_target() {
+      tracing::info!("Setting focus to window: {window}");
+      window.native().focus()
+    } else {
+      tracing::info!("Setting focus to the desktop window.");
+      state.dispatcher.reset_focus()
+    };
 
   if let Err(err) = result {
     tracing::warn!("Failed to set focus: {}", err);

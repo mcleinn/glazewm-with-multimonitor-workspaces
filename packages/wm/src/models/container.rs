@@ -108,6 +108,23 @@ pub enum Container {
   NonTilingWindow(NonTilingWindow),
 }
 
+impl Container {
+  /// Gets the window that should have OS focus while this container is
+  /// the WM's focused container.
+  ///
+  /// Returns `None` if the desktop window should have focus instead. That
+  /// is the case for a workspace, and for a minimized window: a workspace
+  /// whose windows are all minimized resolves its focus to one of them.
+  /// Giving OS focus to a minimized window would make
+  /// `handle_window_focused` restore it.
+  pub fn native_focus_target(&self) -> Option<WindowContainer> {
+    self
+      .as_window_container()
+      .ok()
+      .filter(|window| window.state() != WindowState::Minimized)
+  }
+}
+
 impl PartialEq for Container {
   fn eq(&self, other: &Self) -> bool {
     self.id() == other.id()
@@ -194,4 +211,55 @@ macro_rules! impl_container_debug {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{
+    FloatingStateConfig, FullscreenStateConfig, WindowState,
+  };
+
+  use crate::{
+    models::{Container, NonTilingWindow, TilingWindow, Workspace},
+    traits::CommonGetters,
+  };
+
+  #[test]
+  fn native_focus_target_is_the_window() {
+    let tiling: Container = TilingWindow::mock().call().into();
+    assert_eq!(
+      tiling.native_focus_target().map(|window| window.id()),
+      Some(tiling.id())
+    );
+
+    for state in [
+      WindowState::Floating(FloatingStateConfig::default()),
+      WindowState::Fullscreen(FullscreenStateConfig::default()),
+    ] {
+      let window: Container =
+        NonTilingWindow::mock().state(state).call().into();
+
+      assert_eq!(
+        window.native_focus_target().map(|window| window.id()),
+        Some(window.id())
+      );
+    }
+  }
+
+  #[test]
+  fn native_focus_target_is_the_desktop_for_minimized_windows() {
+    let window: Container = NonTilingWindow::mock()
+      .state(WindowState::Minimized)
+      .call()
+      .into();
+
+    assert!(window.native_focus_target().is_none());
+  }
+
+  #[test]
+  fn native_focus_target_is_the_desktop_for_workspaces() {
+    let workspace: Container = Workspace::mock().call().into();
+
+    assert!(workspace.native_focus_target().is_none());
+  }
 }

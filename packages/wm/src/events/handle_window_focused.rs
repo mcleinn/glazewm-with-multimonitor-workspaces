@@ -29,11 +29,12 @@ pub fn handle_window_focused(
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
-  // Update the focus sync state. If the OS focused window is not same as
-  // the WM's focused container, then the focus is not synced.
-  state.is_focus_synced = match focused_container.as_window_container() {
-    Ok(window) => *window.native() == *native_window,
-    _ => native_window.is_desktop_window().unwrap_or(false),
+  // Update the focus sync state. If the OS focused window is not the
+  // native focus target of the WM's focused container, then the focus is
+  // not synced.
+  state.is_focus_synced = match focused_container.native_focus_target() {
+    Some(window) => *window.native() == *native_window,
+    None => native_window.is_desktop_window().unwrap_or(false),
   };
 
   // Handle overriding focus on close/minimize. After a window is closed
@@ -126,6 +127,10 @@ pub fn handle_window_focused(
 /// be left with the window as minimized and minimize it again on its next
 /// redraw, so `NativeWindow::is_minimized` is deliberately not consulted
 /// here: a window that has focus is never minimized.
+///
+/// This relies on the WM itself never giving OS focus to a minimized
+/// window (see `Container::native_focus_target`), since that focus event
+/// would otherwise restore the window right after it was minimized.
 fn restore_focused_window(
   native_window: &NativeWindow,
   state: &mut WmState,

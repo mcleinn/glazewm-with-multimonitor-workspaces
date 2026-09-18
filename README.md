@@ -31,6 +31,8 @@
 >
 > Also fixed: **restoring a minimized window from the taskbar** no longer flashes it on screen and minimizes it again. The OS delivers the focus event before the restore has finished, so the WM kept the window marked as minimized and re-minimized it on its next redraw; a window that receives focus is now always taken out of the minimized state. If the window is on a workspace that isn't currently shown, that workspace is switched to, as before.
 >
+> Also fixed: **minimizing the only window on a screen** (e.g. a maximized window) no longer flickers and brings the window right back. Once every window of a workspace is minimized, GlazeWM still considers one of them focused and handed OS focus to it, which (with the fix above) restored it. Focus now goes to the desktop instead, as it does for an empty workspace.
+>
 > Also fixed: **windows of elevated processes** (e.g. Task Manager, while GlazeWM itself isn't elevated) no longer leave a permanent hole in the layout. Windows refuses to let an unelevated process move them, so upstream keeps such a window tiled at a position it can never reach: the tile stays empty, and every window you add just shrinks the rest. They are now dropped from the layout the first time positioning them is denied, and ignored from then on, like windows matched by an `ignore` window rule.
 >
 >
