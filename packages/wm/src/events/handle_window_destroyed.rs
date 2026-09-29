@@ -3,7 +3,10 @@ use tracing::info;
 use wm_platform::WindowId;
 
 use crate::{
-  commands::{window::unmanage_window, workspace::deactivate_workspace},
+  commands::{
+    window::{unmanage_window, FocusAfterUnmanage},
+    workspace::deactivate_workspace,
+  },
   traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
@@ -22,7 +25,7 @@ pub fn handle_window_destroyed(
     let workspace = window.workspace().context("No workspace.")?;
 
     info!("Window closed: {window}");
-    unmanage_window(window, state)?;
+    unmanage_window(window, FocusAfterUnmanage::Reassign, state)?;
 
     // Destroy parent workspace if window was killed while its workspace
     // was not displayed (e.g. via task manager).

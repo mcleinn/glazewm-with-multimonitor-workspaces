@@ -11,16 +11,33 @@ use crate::{
   wm_state::WmState,
 };
 
+/// What should happen to focus when a window stops being managed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FocusAfterUnmanage {
+  /// Moves focus to the WM's focus target. For windows that are gone
+  /// (e.g. destroyed or hidden).
+  Reassign,
+
+  /// Leaves focus untouched. For windows that stay on screen, since a
+  /// focus change would take focus away from them and raise the tiling
+  /// windows of the focused workspace above them.
+  Keep,
+}
+
+/// Stops managing a window and removes it from the tree.
 #[allow(clippy::needless_pass_by_value)]
 pub fn unmanage_window(
   window: WindowContainer,
+  focus_after: FocusAfterUnmanage,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   // Create iterator of parent, grandparent, and great-grandparent.
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
 
   // Get container to switch focus to after the window has been removed.
-  let focus_target = state.focus_target_after_removal(&window.clone());
+  let focus_target = (focus_after == FocusAfterUnmanage::Reassign)
+    .then(|| state.focus_target_after_removal(&window.clone()))
+    .flatten();
 
   detach_container(window.clone().into())?;
 

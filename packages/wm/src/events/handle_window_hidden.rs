@@ -3,8 +3,10 @@ use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
 use crate::{
-  commands::window::unmanage_window, traits::WindowGetters,
-  user_config::UserConfig, wm_state::WmState,
+  commands::window::{unmanage_window, FocusAfterUnmanage},
+  traits::WindowGetters,
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_window_hidden(
@@ -42,7 +44,7 @@ pub fn handle_window_hidden(
         return Ok(());
       }
 
-      unmanage_window(window, state)?;
+      unmanage_window(window, FocusAfterUnmanage::Reassign, state)?;
     }
   }
 

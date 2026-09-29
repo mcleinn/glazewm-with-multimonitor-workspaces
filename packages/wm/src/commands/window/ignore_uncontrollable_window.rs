@@ -1,6 +1,8 @@
 use crate::{
-  commands::window::unmanage_window, models::WindowContainer,
-  traits::WindowGetters, wm_state::WmState,
+  commands::window::{unmanage_window, FocusAfterUnmanage},
+  models::WindowContainer,
+  traits::WindowGetters,
+  wm_state::WmState,
 };
 
 /// Stops managing a window that the WM isn't allowed to control, and keeps
@@ -11,6 +13,12 @@ use crate::{
 /// while the WM isn't elevated). Such a window would otherwise keep its
 /// tile forever without ever being moved into it, leaving a gap in the
 /// layout that can't be filled.
+///
+/// Such a window stays on screen and often has just been opened and
+/// focused (e.g. the "Windows Security" credential dialog of Remote
+/// Desktop), so focus is left untouched. Moving focus elsewhere would
+/// also raise the tiling windows of the focused workspace above it,
+/// leaving it buried behind them.
 #[allow(clippy::needless_pass_by_value)]
 pub fn ignore_uncontrollable_window(
   window: WindowContainer,
@@ -22,5 +30,5 @@ pub fn ignore_uncontrollable_window(
   #[cfg(target_os = "windows")]
   crate::window_recovery::show_released_window(&window.native());
 
-  unmanage_window(window, state)
+  unmanage_window(window, FocusAfterUnmanage::Keep, state)
 }

@@ -20,7 +20,7 @@ use crate::{
     container::set_focused_descendant,
     general::platform_sync,
     monitor::{add_monitor, move_bounded_workspaces_to_new_monitor},
-    window::{manage_window, unmanage_window},
+    window::{manage_window, unmanage_window, FocusAfterUnmanage},
   },
   models::{
     Container, Monitor, NativeMonitorProperties, RootContainer,
@@ -774,7 +774,7 @@ impl WmState {
 
     for window in invalid_windows {
       tracing::info!("Removing invalid window: {}", window);
-      unmanage_window(window, self)?;
+      unmanage_window(window, FocusAfterUnmanage::Reassign, self)?;
     }
 
     // Prune ignored windows that are no longer valid.
