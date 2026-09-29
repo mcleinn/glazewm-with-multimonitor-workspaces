@@ -172,6 +172,10 @@ pub struct WindowBehaviorConfig {
   /// Which monitor new windows are placed on.
   pub initial_monitor: InitialWindowMonitor,
 
+  /// What happens when a tiling window is maximized (e.g. via its
+  /// maximize button).
+  pub maximized_windows: MaximizedWindowBehavior,
+
   /// Sets the default options for when a new window is created. This also
   /// changes the defaults for when the state change commands, like
   /// `set_floating`, are used without any flags.
@@ -198,6 +202,20 @@ pub enum InitialWindowMonitor {
   /// The monitor the cursor is on when the window appears (e.g. the
   /// monitor whose taskbar was clicked to launch the application).
   Cursor,
+}
+
+/// What happens when a tiling window is maximized by the OS.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MaximizedWindowBehavior {
+  /// The window becomes a fullscreen window, which covers the screen and
+  /// leaves the tiling layout.
+  #[default]
+  Fullscreen,
+  /// The window is restored, so that it keeps its tile in the layout.
+  Tiling,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -538,7 +556,10 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::{MonitorSelector, WorkspaceConfig};
+  use super::{
+    MaximizedWindowBehavior, MonitorSelector, WindowBehaviorConfig,
+    WorkspaceConfig,
+  };
 
   #[test]
   fn deserializes_monitors_field() {
@@ -559,6 +580,27 @@ mod tests {
     assert_eq!(config.monitors, None);
     assert_eq!(config.spanning_group, None);
     assert_eq!(config.spanning_page, 0);
+  }
+
+  #[test]
+  fn deserializes_maximized_windows_field() {
+    let config: WindowBehaviorConfig =
+      serde_yaml::from_str("maximized_windows: 'tiling'")
+        .expect("Config should deserialize.");
+
+    assert_eq!(config.maximized_windows, MaximizedWindowBehavior::Tiling);
+  }
+
+  #[test]
+  fn maximized_windows_field_defaults_to_fullscreen() {
+    let config: WindowBehaviorConfig =
+      serde_yaml::from_str("initial_state: 'tiling'")
+        .expect("Config should deserialize.");
+
+    assert_eq!(
+      config.maximized_windows,
+      MaximizedWindowBehavior::Fullscreen
+    );
   }
 
   #[test]

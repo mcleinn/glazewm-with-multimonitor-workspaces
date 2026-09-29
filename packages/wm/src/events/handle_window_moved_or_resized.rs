@@ -1,7 +1,8 @@
 use anyhow::Context;
 use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
-  FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
+  FloatingStateConfig, FullscreenStateConfig, HideMethod,
+  MaximizedWindowBehavior, WindowState,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -237,6 +238,22 @@ pub fn handle_window_moved_or_resized(
         window.set_display_state(display_state);
         return Ok(());
       }
+    }
+
+    // Keep a tiling window in its tile when it gets maximized, if
+    // configured to do so. Fullscreen states that the WM set itself (e.g.
+    // via `set-fullscreen` with `maximized: true`) are unaffected, since
+    // the window is then only maximized because the WM maximized it.
+    if is_maximized
+      && window.state() == WindowState::Tiling
+      && config.value.window_behavior.maximized_windows
+        == MaximizedWindowBehavior::Tiling
+    {
+      tracing::info!("Restoring maximized window to its tile: {window}");
+
+      // The redraw restores the window and moves it back into its tile.
+      state.pending_sync.queue_container_to_redraw(window);
+      return Ok(());
     }
 
     let should_fullscreen = {
