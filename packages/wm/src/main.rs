@@ -101,13 +101,18 @@ fn main() -> anyhow::Result<()> {
   }
 }
 
+/// Number of daily log files to keep in `~/.glzr/glazewm/logs`.
+const LOG_FILE_COUNT: usize = 5;
+
 #[allow(clippy::too_many_lines)]
 async fn start_wm(
   config_path: Option<PathBuf>,
   verbosity: Verbosity,
   dispatcher: &Dispatcher,
 ) -> anyhow::Result<()> {
-  setup_logging(&verbosity)?;
+  // Held for the process lifetime so that buffered logs keep being
+  // written to the log file.
+  let _log_guard = setup_logging(&verbosity)?;
 
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
@@ -305,14 +310,41 @@ async fn start_wm(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
-fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
-  let error_log_dir = home::home_dir()
+/// Error logs are saved to `~/.glzr/glazewm/errors.log`. Debug logs are
+/// saved to `~/.glzr/glazewm/logs/glazewm.<date>.log` regardless of the
+/// verbosity of the console output, so that issues which only show up
+/// during normal usage (e.g. after a monitor is unplugged) can be
+/// diagnosed afterwards. The log files are rotated daily, and only the
+/// most recent ones are kept.
+///
+/// Returns a guard that has to be kept alive for as long as logs should
+/// be written to the log file.
+fn setup_logging(
+  verbosity: &Verbosity,
+) -> anyhow::Result<tracing_appender::non_blocking::WorkerGuard> {
+  let glzr_dir = home::home_dir()
     .context("Unable to get home directory.")?
     .join(".glzr/glazewm/");
 
   let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+    tracing_appender::rolling::never(&glzr_dir, "errors.log");
+
+  let file_appender = tracing_appender::rolling::Builder::new()
+    .rotation(tracing_appender::rolling::Rotation::DAILY)
+    .filename_prefix("glazewm")
+    .filename_suffix("log")
+    .max_log_files(LOG_FILE_COUNT)
+    .build(glzr_dir.join("logs"))?;
+
+  let (file_writer, log_guard) =
+    tracing_appender::non_blocking(file_appender);
+
+  // Console output can be quieter than the log file, but never more
+  // verbose than it.
+  let file_level = match verbosity.level() {
+    Level::TRACE => Level::TRACE,
+    _ => Level::DEBUG,
+  };
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -324,6 +356,13 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       // Output to error log file.
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::ERROR)),
+    )
+    .with(
+      // Output to the rotated log file. Escape codes would only make the
+      // file harder to read.
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(file_writer.with_max_level(file_level)),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;
@@ -333,7 +372,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     verbosity.level().to_string()
   );
 
-  Ok(())
+  Ok(log_guard)
 }
 
 /// Launches watcher binary (Windows-only). This is a separate process that
