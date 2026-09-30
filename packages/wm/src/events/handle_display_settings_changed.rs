@@ -22,6 +22,11 @@ pub fn handle_display_settings_changed(
 ) -> anyhow::Result<()> {
   tracing::info!("Display settings changed.");
 
+  // Focus events that arrive while the displays are changing are side
+  // effects of the change (e.g. the OS focusing a window of a monitor
+  // that went away), rather than the user focusing a window.
+  state.display_change_timestamp = Some(std::time::Instant::now());
+
   // Ignore the event if retrieval of the displays or their properties
   // fails (can happen transiently during sleep/wake).
   let displays = try_warn!(state

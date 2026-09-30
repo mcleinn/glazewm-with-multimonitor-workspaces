@@ -58,6 +58,12 @@ pub struct WmState {
   /// Used to decide whether to override incoming focus events.
   pub unmanaged_or_minimized_timestamp: Option<Instant>,
 
+  /// Time since the displays last changed.
+  ///
+  /// Used to ignore the focus events that the OS emits as a side effect
+  /// of a monitor being added or removed.
+  pub display_change_timestamp: Option<Instant>,
+
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
 
@@ -104,6 +110,7 @@ impl WmState {
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
+      display_change_timestamp: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,

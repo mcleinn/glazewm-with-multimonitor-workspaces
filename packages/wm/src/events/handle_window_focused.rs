@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use anyhow::Context;
 use tracing::info;
 use wm_common::{DisplayState, WindowRuleEvent, WindowState, WmEvent};
@@ -79,6 +81,18 @@ pub fn handle_window_focused(
     // if Discord is forcefully shown by the OS when it's on a hidden
     // workspace, switch focus to Discord's workspace.
     if window.display_state() == DisplayState::Hidden {
+      // Removing a monitor parks its workspaces as hidden pages, and the
+      // OS then moves focus to one of their windows. Displaying that page
+      // again would undo the parking and pull the removed screen's
+      // windows onto a monitor that has a screen of its own, so the WM's
+      // focus target is reasserted instead.
+      if is_during_display_change(state.display_change_timestamp) {
+        info!("Ignoring focus of parked window: {window}");
+
+        state.pending_sync.queue_focus_change();
+        return Ok(());
+      }
+
       info!("Focusing off-screen window: {window}");
 
       if workspace.config().spanning_group.is_some() {
@@ -219,6 +233,20 @@ fn uncloak_stale_window(native_window: &NativeWindow) {
   }
 }
 
+/// How long after a display change focus events for parked windows are
+/// treated as side effects of that change.
+///
+/// The OS can take a few hundred milliseconds after a monitor is removed
+/// to move focus off its windows.
+const DISPLAY_CHANGE_GRACE: Duration = Duration::from_secs(2);
+
+/// Returns true if the displays changed recently enough that focus events
+/// are side effects of that change.
+fn is_during_display_change(timestamp: Option<Instant>) -> bool {
+  timestamp
+    .is_some_and(|timestamp| timestamp.elapsed() < DISPLAY_CHANGE_GRACE)
+}
+
 /// Returns true if focus should be reassigned to the WM's focus container.
 fn should_override_focus(state: &WmState) -> bool {
   let has_recent_unmanage = state
@@ -226,4 +254,30 @@ fn should_override_focus(state: &WmState) -> bool {
     .is_some_and(|time| time.elapsed().as_millis() < 100);
 
   has_recent_unmanage && !state.is_focus_synced
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, Instant};
+
+  use super::{is_during_display_change, DISPLAY_CHANGE_GRACE};
+
+  #[test]
+  fn display_change_grace_covers_recent_changes() {
+    assert!(is_during_display_change(Some(Instant::now())));
+  }
+
+  #[test]
+  fn display_change_grace_expires() {
+    let timestamp = Instant::now()
+      .checked_sub(DISPLAY_CHANGE_GRACE + Duration::from_millis(1))
+      .expect("Instant should be representable.");
+
+    assert!(!is_during_display_change(Some(timestamp)));
+  }
+
+  #[test]
+  fn display_change_grace_ignores_missing_timestamp() {
+    assert!(!is_during_display_change(None));
+  }
 }
