@@ -21,6 +21,7 @@ use crate::{
     general::platform_sync,
     monitor::{add_monitor, move_bounded_workspaces_to_new_monitor},
     window::{manage_window, unmanage_window, FocusAfterUnmanage},
+    workspace::sort_tiling_windows_by_position,
   },
   models::{
     Container, Monitor, NativeMonitorProperties, RootContainer,
@@ -168,6 +169,13 @@ impl WmState {
           config,
         )?;
       }
+    }
+
+    // Managing in z-order bears no relation to how the windows are
+    // arranged on screen, so order each workspace's tiles by position.
+    // Without this, the layout is shuffled whenever the WM starts.
+    for workspace in self.workspaces() {
+      sort_tiling_windows_by_position(&workspace);
     }
 
     let container_to_focus = focused_window

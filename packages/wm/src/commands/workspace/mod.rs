@@ -3,6 +3,7 @@ mod deactivate_workspace;
 mod focus_spanning_workspace;
 mod focus_workspace;
 mod move_workspace_in_direction;
+mod sort_tiling_windows_by_position;
 mod sort_workspaces;
 mod update_workspace_config;
 
@@ -11,5 +12,6 @@ pub use deactivate_workspace::*;
 pub use focus_spanning_workspace::*;
 pub use focus_workspace::*;
 pub use move_workspace_in_direction::*;
+pub use sort_tiling_windows_by_position::*;
 pub use sort_workspaces::*;
 pub use update_workspace_config::*;
