@@ -1,3 +1,4 @@
+mod exit_unfocused_fullscreen;
 mod ignore_uncontrollable_window;
 mod ignore_window;
 mod manage_window;
@@ -10,6 +11,7 @@ mod set_window_size;
 mod unmanage_window;
 mod update_window_state;
 
+pub use exit_unfocused_fullscreen::*;
 pub use ignore_uncontrollable_window::*;
 pub use ignore_window::*;
 pub use manage_window::*;

@@ -8,7 +8,10 @@ use wm_platform::NativeWindow;
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::{manage_window, run_window_rules, update_window_state},
+    window::{
+      exit_unfocused_fullscreen, manage_window, run_window_rules,
+      update_window_state,
+    },
     workspace::{focus_workspace, focus_workspace_instance},
   },
   models::WorkspaceTarget,
@@ -72,6 +75,8 @@ pub fn handle_window_focused(
     if focused_container == window.clone().into() {
       state.is_focus_synced = true;
       state.pending_sync.queue_workspace_to_reorder(workspace);
+
+      exit_unfocused_fullscreen(state, config)?;
       return Ok(());
     }
 
@@ -110,6 +115,12 @@ pub fn handle_window_focused(
 
     // Update the WM's focus state.
     set_focused_descendant(&window.clone().into(), None);
+
+    // A fullscreen window that no longer has focus on its screen gives
+    // its tile back, so that the window the user switched to isn't
+    // covered by it (and isn't left hiding it either). This has to run
+    // after the focus order was updated above.
+    exit_unfocused_fullscreen(state, config)?;
 
     // Run window rules for focus events.
     run_window_rules(

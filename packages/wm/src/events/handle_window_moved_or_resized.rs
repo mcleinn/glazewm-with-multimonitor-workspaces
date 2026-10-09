@@ -1,8 +1,7 @@
 use anyhow::Context;
 use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
-  FloatingStateConfig, FullscreenStateConfig, HideMethod,
-  MaximizedWindowBehavior, WindowState,
+  FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -13,7 +12,7 @@ use wm_platform::{NativeWindow, Rect};
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
-    window::update_window_state,
+    window::{exit_unfocused_fullscreen, update_window_state},
   },
   events::handle_window_moved_or_resized_end,
   models::{Monitor, NonTilingWindow, WindowContainer},
@@ -240,22 +239,6 @@ pub fn handle_window_moved_or_resized(
       }
     }
 
-    // Keep a tiling window in its tile when it gets maximized, if
-    // configured to do so. Fullscreen states that the WM set itself (e.g.
-    // via `set-fullscreen` with `maximized: true`) are unaffected, since
-    // the window is then only maximized because the WM maximized it.
-    if is_maximized
-      && window.state() == WindowState::Tiling
-      && config.value.window_behavior.maximized_windows
-        == MaximizedWindowBehavior::Tiling
-    {
-      tracing::info!("Restoring maximized window to its tile: {window}");
-
-      // The redraw restores the window and moves it back into its tile.
-      state.pending_sync.queue_container_to_redraw(window);
-      return Ok(());
-    }
-
     let should_fullscreen = {
       let workspace = nearest_monitor
         .displayed_workspace()
@@ -355,6 +338,20 @@ pub fn handle_window_moved_or_resized(
 
       // TODO: Handle a fullscreen window being moved from one monitor to
       // another.
+
+      // An application can maximize itself while the user is working in
+      // another window of that screen (e.g. on start), in which case the
+      // window doesn't get to cover the focused one. The OS focus is
+      // used instead of the WM's, since the focus event for a window
+      // that the user maximizes can arrive after the maximize itself.
+      let has_native_focus = state
+        .dispatcher
+        .focused_window()
+        .is_ok_and(|focused| focused == *window.native());
+
+      if !has_native_focus {
+        exit_unfocused_fullscreen(state, config)?;
+      }
 
       return Ok(());
     }

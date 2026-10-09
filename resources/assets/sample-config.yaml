@@ -108,12 +108,6 @@ window_behavior:
   # Allowed values: 'spawn', 'cursor'.
   initial_monitor: 'spawn'
 
-  # What happens when a tiling window is maximized (e.g. via its maximize
-  # button). 'fullscreen' turns it into a fullscreen window that covers
-  # the screen and leaves the layout; 'tiling' restores it, so that it
-  # keeps its tile and stays part of the layout.
-  # Allowed values: 'fullscreen', 'tiling'.
-  maximized_windows: 'fullscreen'
 
   # Sets the default options for when a new window is created. This also
   # changes the defaults for when the state change commands, like
